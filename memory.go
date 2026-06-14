@@ -15,10 +15,30 @@ func NewMemoryPipeline(store MemoryStore, logger Logger) *MemoryPipeline {
 	return &MemoryPipeline{store: store, logger: logger}
 }
 
+func extractTenantID(sessionKey string) string {
+	parts := strings.SplitN(sessionKey, "/", 3)
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return ""
+}
+
+func extractUserID(sessionKey string) string {
+	parts := strings.SplitN(sessionKey, "/", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
+}
+
 func (p *MemoryPipeline) ExtractL1(ctx context.Context, records []L0Record) error {
 	if len(records) < 3 {
 		return nil
 	}
+	if len(records) == 0 {
+		return nil
+	}
+
 	var sb strings.Builder
 	for _, r := range records {
 		sb.WriteString(r.Role + ": " + r.Content + "\n")
@@ -27,8 +47,14 @@ func (p *MemoryPipeline) ExtractL1(ctx context.Context, records []L0Record) erro
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
+
+	sessionKey := records[0].SessionKey
 	return p.store.SaveL1(ctx, &L1Memory{
-		ID: newID(), Content: content, Type: "conversation",
+		ID:        newID(),
+		TenantID:  extractTenantID(sessionKey),
+		UserID:    extractUserID(sessionKey),
+		Content:   content,
+		Type:      "conversation",
 		CreatedAt: time.Now().UnixMilli(),
 	})
 }

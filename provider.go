@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"sort"
 	"sync"
@@ -22,17 +23,20 @@ func NewProviderManager(store ProviderStore, logger Logger) *ProviderManager {
 		logger: logger,
 		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
-	pm.refresh()
+	// First refresh is best-effort; New() does not block on it for more than timeout.
+	// If it fails, active remains empty and Select() returns ErrNoAvailableProviders.
+	if err := pm.refresh(); err != nil {
+		logger.Warn("initial provider refresh failed, will retry on next Select", "error", err)
+	}
 	return pm
 }
 
-func (pm *ProviderManager) refresh() {
+func (pm *ProviderManager) refresh() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	providers, err := pm.store.ListProviders(ctx)
 	if err != nil {
-		pm.logger.Warn("failed to list providers", "error", err)
-		return
+		return fmt.Errorf("list providers: %w", err)
 	}
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -46,9 +50,15 @@ func (pm *ProviderManager) refresh() {
 	sort.Slice(pm.active, func(i, j int) bool {
 		return pm.active[i].Priority < pm.active[j].Priority
 	})
+	return nil
 }
 
-func (pm *ProviderManager) Select(ctx context.Context, preferredID string) *LLMProvider {
+// RefreshProviders reloads providers from the store. Can be called at runtime.
+func (pm *ProviderManager) RefreshProviders() error {
+	return pm.refresh()
+}
+
+func (pm *ProviderManager) Select(ctx context.Context, preferredID string) (*LLMProvider, error) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
@@ -56,13 +66,13 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) *LLMP
 		for _, p := range pm.active {
 			if p.ID == preferredID {
 				cp := *p
-				return &cp
+				return &cp, nil
 			}
 		}
 	}
 
 	if len(pm.active) == 0 {
-		return nil
+		return nil, fmt.Errorf("provider: %w", ErrNoAvailableProviders)
 	}
 
 	totalWeight := 0
@@ -71,7 +81,7 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) *LLMP
 	}
 	if totalWeight <= 0 {
 		cp := *pm.active[0]
-		return &cp
+		return &cp, nil
 	}
 
 	roll := pm.rng.Intn(totalWeight)
@@ -80,11 +90,11 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) *LLMP
 		cumulative += p.Weight
 		if roll < cumulative {
 			cp := *p
-			return &cp
+			return &cp, nil
 		}
 	}
 	cp := *pm.active[len(pm.active)-1]
-	return &cp
+	return &cp, nil
 }
 
 func (pm *ProviderManager) All() []*LLMProvider {

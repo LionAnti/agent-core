@@ -359,16 +359,6 @@ type SendTiming struct {
     LLMCall     int64 `json:"llm_call_ms"`
     RulesPost   int64 `json:"rules_post_ms"`
 }
-
-type PipelineState struct {
-    TenantID              string `json:"tenant_id"`
-    UserID                string `json:"user_id"`
-    SessionKey            string `json:"session_key"`
-    LastL1At              int64  `json:"last_l1_at"`
-    LastL2At              int64  `json:"last_l2_at"`
-    LastExtractionCursor  string `json:"last_extraction_cursor"`
-}
-
 type L0Record struct {
     ID         string `json:"id"`
     SessionKey string `json:"session_key"`

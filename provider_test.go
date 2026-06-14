@@ -22,7 +22,7 @@ func TestProviderManager_Select(t *testing.T) {
         },
     }
     pm := NewProviderManager(store, NoopLogger{})
-    selected := pm.Select(context.Background(), "")
+    selected, _ := pm.Select(context.Background(), "")
     if selected == nil {
         t.Fatal("expected a provider to be selected")
     }
@@ -34,7 +34,7 @@ func TestProviderManager_Select(t *testing.T) {
 func TestProviderManager_SelectNone(t *testing.T) {
     store := &mockProviderStore{providers: []*LLMProvider{}}
     pm := NewProviderManager(store, NoopLogger{})
-    selected := pm.Select(context.Background(), "")
+    selected, _ := pm.Select(context.Background(), "")
     if selected != nil {
         t.Fatal("expected nil when no providers")
     }

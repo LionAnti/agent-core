@@ -3,9 +3,11 @@ package agentcore
 import (
 	"regexp"
 	"sort"
+	"sync"
 )
 
 type RulesEngine struct {
+	mu    sync.RWMutex
 	rules []*Rule
 	cache *ruleCache
 }
@@ -21,21 +23,26 @@ func (e *RulesEngine) AddRule(r *Rule) {
 	if r.Pattern != "" {
 		e.cache.set(r.Name, regexp.MustCompile(r.Pattern))
 	}
+	e.mu.Lock()
 	e.rules = append(e.rules, r)
+	e.mu.Unlock()
 }
 
 func (e *RulesEngine) RemoveRule(name string) {
-	filtered := make([]*Rule, 0, len(e.rules))
+	filtered := make([]*Rule, 0, 10)
+	e.mu.Lock()
 	for _, r := range e.rules {
 		if r.Name != name {
 			filtered = append(filtered, r)
 		}
 	}
 	e.rules = filtered
+	e.mu.Unlock()
 }
 
 func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 	var results []RuleOutput
+	e.mu.RLock()
 	for _, r := range e.rules {
 		if !r.Enabled {
 			continue
@@ -65,19 +72,16 @@ func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 			Tags: r.Tags, Domain: r.Domain, Level: r.Level,
 		})
 	}
+	e.mu.RUnlock()
+
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
 	return results
 }
 
-func (e *RulesEngine) MatchPre(ctx *RuleContext) []RuleOutput {
-	return e.Match(ctx)
-}
-
-func (e *RulesEngine) MatchPost(ctx *RuleContext) []RuleOutput {
-	return e.Match(ctx)
-}
+func (e *RulesEngine) MatchPre(ctx *RuleContext) []RuleOutput { return e.Match(ctx) }
+func (e *RulesEngine) MatchPost(ctx *RuleContext) []RuleOutput { return e.Match(ctx) }
 
 func builtinRules() []*Rule {
 	return []*Rule{
