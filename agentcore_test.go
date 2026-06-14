@@ -3,7 +3,7 @@ package agentcore
 import (
 	"context"
 	"testing"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 // ─── Mock implementations ───

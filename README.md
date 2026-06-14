@@ -1,34 +1,29 @@
 # agent-core
 
-**Zero-dependency Go library** for building LLM-powered agent applications. Provides five core capabilities as a reusable package:
+**Zero-dependency Go library** for building LLM-powered agent applications.
 
-| Module | Description |
-|--------|-------------|
-| **Provider Management** | Multi-LLM routing, weighted selection, failover |
-| **Context Engineering** | Adaptive compression (summary/mermaid/sliding window) |
-| **Tool Registry** | Registration, concurrent-safe caching, intent-based selection |
-| **Rules Engine** | 8-domain regex matching, scoring, priority sorting |
-| **Dynamic Harness** | Intent classification, density estimation, offload decisions, utility tracking |
+[![Go](https://github.com/LionAnti/agent-core/actions/workflows/ci.yml/badge.svg)](https://github.com/LionAnti/agent-core/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/LionAnti/agent-core)](https://pkg.go.dev/github.com/LionAnti/agent-core)
 
-## Architecture
+## Modules
 
-Users implement 8 interfaces to connect their infrastructure — no storage or transport dependencies are bundled.
+| Package | Import | Description |
+|---------|--------|-------------|
+| `agentcore` | `github.com/LionAnti/agent-core` | Orchestrator: New(), Config, Session |
+| `types` | `.../types` | Shared types, 16 user interfaces, errors |
+| `rules` | `.../rules` | Regex rule engine (Match, AddRule, ListRules) |
+| `rules` | `.../rules` | Regex rule engine (Match, AddRule, ListRules) |
+| `provider` | `.../provider` | LLM provider routing + weighted selection |
+| `provider` | `.../provider` | LLM provider routing + weighted selection |
+| `compressor` | `.../compressor` | Context compression (summary/mermaid/sliding) |
+| `registry` | `.../registry` | Tool registration + intent-based selection |
+| `harness` | `.../harness` | Dynamic pipeline (classifier, density, offload, utility) |
+| `harness` | `.../harness` | Dynamic pipeline (classifier, density, offload, utility) |
+| `memory` | `.../memory` | Memory pipeline (L1 extraction + recall) |
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    agent-core                            │
-│  ┌────────┐ ┌──────────┐ ┌──────┐ ┌──────┐ ┌────────┐ │
-│  │Provider│ │Compressor│ │Registry│ │Rules │ │Harness │ │
-│  │Manager │ │  Engine  │ │  +Cache│ │Engine│ │Pipeline│ │
-│  └───┬────┘ └────┬─────┘ └───┬──┘ └──┬───┘ └───┬────┘ │
-│      │           │           │       │         │       │
-└──────┼───────────┼───────────┼───────┼─────────┼───────┘
-       │           │           │       │         │
-  ProviderStore   LLMClient  RegistryStore RuleStore  ...
-  (interface)    (interface) (interface)  (interface)
-```
+> The package is at `github.com/LionAnti/agent-core`, NOT `github.com/agent-core`.
 
-## Usage
+## Quick Start
 
 ```go
 package main
@@ -36,66 +31,81 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/agent-core"
+    "github.com/LionAnti/agent-core"
+    "github.com/LionAnti/agent-core/types"
 )
 
-// Implement the LLMClient interface
-type myLLM struct {}
-func (m *myLLM) Chat(ctx context.Context, req *agentcore.ChatRequest) (*agentcore.ChatResponse, error) {
-    // Wrap your LLM SDK here (OpenAI, Claude, DeepSeek, etc.)
-    return &agentcore.ChatResponse{
-        Content: "Hello from LLM!",
-        Usage:   agentcore.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
-    }, nil
+type myLLM struct{}
+func (m *myLLM) Chat(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+    return &types.ChatResponse{Content: "Hello!"}, nil
 }
 
+// ... implement ProviderStore, RegistryStore, MemoryStore (see examples/)
+
 func main() {
-    core, err := agentcore.New(agentcore.Config{
+    core, _ := agentcore.New(agentcore.Config{
         LLMClient:     &myLLM{},
-        ProviderStore: &myProviderStore{},  // your implementation
-        RegistryStore: &myRegistryStore{},  // your implementation
-        MemoryStore:   &myMemoryStore{},    // your implementation
-        Logger:        agentcore.NoopLogger{},
+        ProviderStore: &myProviderStore{},
+        RegistryStore: &myRegistryStore{},
+        MemoryStore:   &myMemoryStore{},
     })
-    if err != nil {
-        panic(err)
-    }
     defer core.Close(context.Background())
 
-    sess := core.NewSession("tenant-001", "user-001",
-        agentcore.WithModel("deepseek-chat"))
-    result, err := sess.Send(context.Background(), "Hello!", nil)
-    if err != nil {
-        panic(err)
-    }
+    sess, _ := core.NewSession("tenant-1", "user-1",
+        agentcore.WithModel("gpt-4"))
+    defer sess.Close()
+
+    result, _ := sess.Send(context.Background(), "Hello!", nil)
     fmt.Println(result.Response.Content)
 }
 ```
 
+See [examples/basic](examples/basic/) and [examples/advanced](examples/advanced/) for full runnable examples.
+
 ## Pipeline
 
-`Session.Send()` executes a 9-stage pipeline with full panic isolation and graceful degradation:
+```
+Send() → Pre-rules → Intent Classification → Tool Selection →
+Memory Recall → Density Estimation → Offload Decision →
+Compression (if needed) → LLM Call → Post-rules
+```
 
-1. **Pre-rules** — Safety checks, routing hints
-2. **Intent Classification** — Rule-based + LLM hybrid
-3. **Tool Selection** — Intent-aware tool matching
-4. **Memory Recall** — L1/L2/L3 memory retrieval (continues on failure)
-5. **Density Estimation** — 6-signal context density analysis
-6. **Offload Decision** — 50% mild / 85% aggressive thresholds
-7. **Compression** — Summary, mermaid, or sliding window
-8. **LLM Call** — Provider-routed request
-9. **Post-rules** — Scoring and classification
+## Interfaces (16 total)
 
-## Interfaces
+| Interface | Methods | Required | Storage Example |
+|-----------|---------|----------|----------------|
+| `LLMClient` | 1 | Yes | OpenAI/Claude SDK wrapper |
+| `ProviderStore` | 5 | Yes | PostgreSQL/etcd providers table |
+| `RegistryStore` | 4 | Yes | etcd/Redis/ZK KV |
+| `MemoryStore` | 15 | Yes | PostgreSQL/tidb |
+| `L0Store` | 2 | No | PostgreSQL |
+| `RuleStore` | 3 | No | etcd/YAML file |
+| `VectorStore` | 3 | No | Milvus/pgvector |
+| `Logger` | 4 | No | zap/logrus (default: noop) |
+| `MetricsCollector` | 4 | No | Prometheus (default: noop) |
+| `StreamLLMClient` | 2 | No | Extends LLMClient with streaming |
 
-| Interface | Required | Purpose |
-|-----------|----------|---------|
-| `LLMClient` | Yes | Wrap any LLM SDK |
-| `ProviderStore` | Yes | Persist LLM provider configs |
-| `RegistryStore` | Yes | KV store for tool registration |
-| `MemoryStore` | Yes | Persist L1-L3 memory |
-| `L0Store` | No | Persist raw conversation records |
-| `RuleStore` | No | Persist user-defined rules |
-| `VectorStore` | No | Semantic memory search |
-| `Logger` | No | Structured logging (default: noop) |
-| `MetricsCollector` | No | Performance metrics (default: noop) |
+## Architecture
+
+```
+agentcore (orchestrator)
+  ├── types/    — shared data types + interfaces
+  ├── rules/    — regex-based rule matching
+  ├── provider/ — LLM provider routing
+  ├── compressor/ — context compression
+  ├── registry/ — tool registration + selection
+  ├── harness/  — dynamic harness pipeline
+  └── memory/   — memory extraction + recall
+```
+
+## Testing
+
+```bash
+go test ./...              # all tests
+go test -race -count=1 ./... # race detector
+go test -bench=. -benchmem ./... # benchmarks
+```
+
+## License
+
+MIT

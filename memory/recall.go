@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 	"strings"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type Recall struct {

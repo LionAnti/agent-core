@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 	"time"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type UtilityTracker struct {

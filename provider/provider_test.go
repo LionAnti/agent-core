@@ -3,7 +3,7 @@ package provider
 import (
 	"context"
 	"testing"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type mockProviderStore struct { providers []*types.LLMProvider }

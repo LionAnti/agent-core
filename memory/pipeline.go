@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"time"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type Pipeline struct {

@@ -6,13 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agent-core/compressor"
-	"github.com/agent-core/harness"
-	"github.com/agent-core/memory"
-	"github.com/agent-core/provider"
-	"github.com/agent-core/registry"
-	"github.com/agent-core/rules"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/compressor"
+	"github.com/LionAnti/agent-core/harness"
+	"github.com/LionAnti/agent-core/memory"
+	"github.com/LionAnti/agent-core/provider"
+	"github.com/LionAnti/agent-core/registry"
+	"github.com/LionAnti/agent-core/rules"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type AgentCore struct {

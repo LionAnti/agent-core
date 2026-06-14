@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type mockLLM struct{}

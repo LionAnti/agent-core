@@ -3,7 +3,7 @@ package rules
 import (
 	"regexp"
 	"sync"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type ruleCache struct {

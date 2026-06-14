@@ -1,6 +1,6 @@
 package agentcore
 
-import "github.com/agent-core/types"
+import "github.com/LionAnti/agent-core/types"
 
 type SessionOption func(*types.Session)
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type ToolRegistry struct {

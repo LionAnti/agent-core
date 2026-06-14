@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 func newID() string {

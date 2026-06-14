@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agent-core/memory"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/memory"
+	"github.com/LionAnti/agent-core/types"
 )
 
 const defaultCallTimeout = 30 * time.Second

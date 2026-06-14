@@ -3,7 +3,7 @@ package registry
 import (
 	"context"
 	"testing"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 type mockStore struct { data map[string][]byte }

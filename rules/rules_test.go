@@ -2,7 +2,7 @@ package rules
 
 import (
 	"testing"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 func ptr(s string) *string { return &s }

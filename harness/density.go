@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 	"strings"
-	"github.com/agent-core/types"
+	"github.com/LionAnti/agent-core/types"
 )
 
 var shiftWords = []string{"but","however","actually","instead"}
