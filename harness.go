@@ -20,6 +20,7 @@ func (c *HybridClassifier) Classify(ctx context.Context, msgs []Message, state *
 		return &IntentClassification{Type: IntentUnknown, Confidence: 0}, nil
 	}
 	lastMsg := msgs[len(msgs)-1].Content
+	if c.rules == nil { return &IntentClassification{Type: IntentFactual, Confidence: 0.3}, nil }
 	outputs := c.rules.Match(&RuleContext{Domain: DomainIntentClassification, Query: lastMsg})
 	for _, o := range outputs {
 		if o.Score >= 0.7 {

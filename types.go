@@ -299,6 +299,9 @@ const (
     SessionEnded  SessionStatus = "ended"
 )
 
+// Session represents a conversation session.
+// Send is safe for sequential calls (mutex-protected).
+// Do not call Send concurrently from multiple goroutines.
 type Session struct {
     ID         string        `json:"id"`
     TenantID   string        `json:"tenant_id"`

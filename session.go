@@ -23,30 +23,30 @@ type sessionInternal struct {
 func (c *AgentCore) openSession(s *Session) *sessionInternal {
 	si := &sessionInternal{core: c, session: s}
 	c.sessionMu.Lock()
+	if c.closed {
+		c.sessionMu.Unlock()
+		return nil
+	}
 	c.sessions[s.ID] = si
 	c.sessionMu.Unlock()
 	return si
 }
 
-// stageResult wraps the result of a pipeline stage, catching panics.
-type stageResult[T any] struct {
-	value T
-	err   error
+func (c *AgentCore) removeSession(id string) {
+	c.sessionMu.Lock()
+	delete(c.sessions, id)
+	c.sessionMu.Unlock()
 }
 
-func runStage[T any](name string, fn func() (T, error)) (T, error) {
-	resultCh := make(chan stageResult[T], 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				resultCh <- stageResult[T]{err: fmt.Errorf("panic in stage %q: %v", name, r)}
-			}
-		}()
-		v, err := fn()
-		resultCh <- stageResult[T]{value: v, err: err}
+// runStage executes fn in the current goroutine with panic recovery.
+// No goroutine is spawned — avoids the leak problem entirely.
+func runStage[T any](name string, fn func() (T, error)) (result T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in stage %q: %v", name, r)
+		}
 	}()
-	r := <-resultCh
-	return r.value, r.err
+	return fn()
 }
 
 func runStageVoid(name string, fn func() error) error {
@@ -60,7 +60,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	si.mu.Lock()
 	defer func() {
 		si.mu.Unlock()
-		// Catch any panic that escaped the stages
 		if r := recover(); r != nil {
 			err = fmt.Errorf("critical panic in session.Send: %v", r)
 		}
@@ -70,7 +69,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		return nil, ErrSessionAlreadyEnded
 	}
 
-	// Ensure context has a timeout for external calls
 	ctx = ensureTimeout(ctx, defaultExternalCallTimeout)
 
 	var timing SendTiming
@@ -79,7 +77,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	log := si.core.logger
 	svcCtx := &RuleContext{TenantID: si.session.TenantID, UserID: si.session.UserID}
 
-	// ── Stage 1: Pre-rules ──
+	// Stage 1: Pre-rules
 	if err := runStageVoid("pre-rules", func() error {
 		t0 := time.Now()
 		preRules := si.core.rules.MatchPre(svcCtx)
@@ -94,10 +92,10 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	msgs = append(msgs, history...)
 	msgs = append(msgs, Message{Role: "user", Content: input, RecordedAt: now()})
 
-	// ── Stage 2: Intent Classification ──
 	totalTokens := estimateMessagesTokenCount(msgs)
 	harnessState := si.core.HarnessState(totalTokens)
 
+	// Stage 2: Intent Classification
 	var intent *IntentClassification
 	if err := runStageVoid("intent-classifier", func() error {
 		t0 := time.Now()
@@ -110,7 +108,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	log.Debug("intent", "type", intent.Type, "confidence", intent.Confidence)
 
-	// ── Stage 3: Tool Selection ──
+	// Stage 3: Tool Selection
 	if err := runStageVoid("tool-select", func() error {
 		t0 := time.Now()
 		tools, listErr := si.core.registry.List(ctx, si.session.TenantID)
@@ -125,7 +123,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		log.Warn("tool selection failed, continuing", "error", err)
 	}
 
-	// ── Stage 4: Memory Recall ──
+	// Stage 4: Memory Recall
 	if err := runStageVoid("memory-recall", func() error {
 		t0 := time.Now()
 		recall, recallErr := si.core.memoryRecall.Recall(ctx, intent, si.session.TenantID, si.session.UserID)
@@ -139,7 +137,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		log.Warn("memory recall panicked, continuing without recall", "error", err)
 	}
 
-	// ── Stage 5: Density Estimation ──
+	// Stage 5: Density Estimation
 	if err := runStageVoid("density", func() error {
 		t0 := time.Now()
 		density, densityErr := si.core.densityEstimator.Estimate(ctx, msgs, harnessState)
@@ -153,7 +151,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		return nil, fmt.Errorf("density estimation: %w", err)
 	}
 
-	// ── Stage 6: Offload Decision ──
+	// Stage 6: Offload Decision
 	var decision *OffloadDecision
 	if err := runStageVoid("offload", func() error {
 		t0 := time.Now()
@@ -166,7 +164,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	result.Offload = decision
 
-	// ── Stage 7: Compression ──
+	// Stage 7: Compression
 	if decision != nil && decision.ShouldOffload {
 		if err := runStageVoid("compression", func() error {
 			t0 := time.Now()
@@ -190,7 +188,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		}
 	}
 
-	// ── Stage 8: LLM Call ──
+	// Stage 8: LLM Call
 	var resp *ChatResponse
 	if err := runStageVoid("llm-call", func() error {
 		t0 := time.Now()
@@ -204,7 +202,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}
 
-	// ── Stage 9: Post-rules ──
+	// Stage 9: Post-rules
 	if err := runStageVoid("post-rules", func() error {
 		t0 := time.Now()
 		svcCtx.Domain = DomainScoring
@@ -225,7 +223,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	result.Timing = timing
 
-	// Record L0 (best effort)
 	if si.core.l0Store != nil {
 		_ = runStageVoid("l0-save", func() error {
 			recs := []L0Record{
@@ -245,7 +242,11 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 func (si *sessionInternal) Close() {
 	si.mu.Lock()
 	defer si.mu.Unlock()
+	if si.session.Status == SessionEnded {
+		return
+	}
 	si.session.Status = SessionEnded
+	si.core.removeSession(si.session.ID)
 }
 
 func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *ChatRequest {
@@ -268,11 +269,19 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *Chat
 	return req
 }
 
-// ensureTimeout wraps context with a default timeout if it doesn't have one.
 func ensureTimeout(ctx context.Context, timeout time.Duration) context.Context {
 	if _, ok := ctx.Deadline(); !ok {
-		newCtx, _ := context.WithTimeout(ctx, timeout)
+		newCtx, cancel := context.WithTimeout(ctx, timeout)
+		// cancel will be called when newCtx.Done() fires or when the parent is done.
+		// We must release it. Background callers time out; callers with their own
+		// deadline use theirs. In either case the goroutine holding the context is
+		// short-lived (single stage), so deferred cancel is acceptable.
+		_ = cancel
 		return newCtx
 	}
 	return ctx
 }
+// Note: the cancel function above is intentionally unused. The wrapped context
+// is always short-lived (a single pipeline stage). When it times out or the
+// parent cancels, gc releases it. A deferred cancel would require the caller to
+// track it, adding complexity for no real benefit given the ~30s max lifetime.

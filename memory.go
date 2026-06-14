@@ -45,6 +45,9 @@ func NewDefaultMemoryRecall(store MemoryStore, vector VectorStore, logger Logger
 
 func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassification, tenantID, userID string) (*RecallResult, error) {
 	result := &RecallResult{}
+	if mr.store == nil {
+		return result, nil
+	}
 	if intent == nil {
 		return result, nil
 	}

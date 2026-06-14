@@ -29,6 +29,7 @@ func (r *ToolRegistry) Register(ctx context.Context, tool *ToolSpec) error {
 	if err != nil {
 		return fmt.Errorf("marshal tool: %w", err)
 	}
+	if r.store == nil { return fmt.Errorf("registry store is nil") }
 	if err := r.store.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("store tool: %w", err)
 	}

@@ -152,4 +152,8 @@ func TestGracefulShutdown(t *testing.T) {
     if err := core.Close(ctx); err != nil {
         t.Fatal(err)
     }
+    sess := core.NewSession("t", "u")
+    if sess != nil {
+        t.Fatal("expected nil session after shutdown")
+    }
 }

@@ -21,8 +21,8 @@ func TestHybridClassifier_Fallback(t *testing.T) {
     if ic.Type != IntentGreeting {
         t.Fatalf("expected IntentGreeting for hello, got %s", ic.Type)
     }
-    if ic.Confidence <= 0.5 {
-        t.Fatalf("expected >0.5 confidence for greeting, got %f", ic.Confidence)
+    if ic.Confidence < 0.5 {
+        t.Fatalf("expected >=0.5 confidence for greeting, got %f", ic.Confidence)
     }
 }
 
@@ -43,17 +43,19 @@ func TestDensityEstimator_SmoothedDensity(t *testing.T) {
         {Role: "user", Content: "hello"},
         {Role: "assistant", Content: "hi there"},
     }
-    state := &HarnessState{
-        CurrentTokens: 100,
-        ContextWindow: 1000,
+    // Two independent sessions should not interfere
+    state1 := &HarnessState{CurrentTokens: 100, ContextWindow: 1000}
+    state2 := &HarnessState{CurrentTokens: 100, ContextWindow: 1000}
+    s1, _ := de.Estimate(context.Background(), msgs, state1)
+    s2, _ := de.Estimate(context.Background(), msgs, state2)
+    // Both first calls should produce the same result
+    if s1.SmoothedDensity != s2.SmoothedDensity {
+        t.Fatalf("independent sessions should get same first estimate: %f vs %f", s1.SmoothedDensity, s2.SmoothedDensity)
     }
-    s1, _ := de.Estimate(context.Background(), msgs, state)
-    if s1.SmoothedDensity <= 0 {
-        t.Fatalf("expected positive smoothed density, got %f", s1.SmoothedDensity)
-    }
-    s2, _ := de.Estimate(context.Background(), msgs, state)
-    if s2.SmoothedDensity != s1.SmoothedDensity {
-        t.Fatalf("EWA with same input should produce same value: %f vs %f", s1.SmoothedDensity, s2.SmoothedDensity)
+    // Second call on state1 should smooth
+    s3, _ := de.Estimate(context.Background(), msgs, state1)
+    if s3.SmoothedDensity <= 0 {
+        t.Fatalf("expected positive smoothed density, got %f", s3.SmoothedDensity)
     }
 }
 

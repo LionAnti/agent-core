@@ -42,6 +42,9 @@ func (ce *CompressorEngine) ShouldCompress(state *HarnessState) *CompressionDeci
 }
 
 func (ce *CompressorEngine) Compress(ctx context.Context, msgs []Message, decision *CompressionDecision) (*CompressionResult, error) {
+	if decision == nil {
+		return nil, fmt.Errorf("nil compression decision")
+	}
 	switch decision.Strategy {
 	case CompressionSummary:
 		return ce.summaryCompress(ctx, msgs)
@@ -55,14 +58,18 @@ func (ce *CompressorEngine) Compress(ctx context.Context, msgs []Message, decisi
 }
 
 func (ce *CompressorEngine) summaryCompress(ctx context.Context, msgs []Message) (*CompressionResult, error) {
-	if len(msgs) == 0 {
-		return nil, fmt.Errorf("no messages to compress")
+	if len(msgs) < 2 {
+		return nil, fmt.Errorf("need at least 2 messages to compress, got %d", len(msgs))
 	}
 	n := len(msgs)
 	compressEnd := n * 60 / 100
-	if compressEnd < 2 {
+	if compressEnd < 1 {
+		compressEnd = 1
+	}
+	if compressEnd >= n {
 		compressEnd = n - 1
 	}
+
 	var sb strings.Builder
 	for i := 0; i < compressEnd; i++ {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", msgs[i].Role, msgs[i].Content))
@@ -96,14 +103,18 @@ func (ce *CompressorEngine) summaryCompress(ctx context.Context, msgs []Message)
 }
 
 func (ce *CompressorEngine) mermaidCompress(ctx context.Context, msgs []Message) (*CompressionResult, error) {
-	if len(msgs) == 0 {
-		return nil, fmt.Errorf("no messages to compress")
+	if len(msgs) < 2 {
+		return nil, fmt.Errorf("need at least 2 messages to compress, got %d", len(msgs))
 	}
 	n := len(msgs)
 	compressEnd := n * 60 / 100
-	if compressEnd < 2 {
+	if compressEnd < 1 {
+		compressEnd = 1
+	}
+	if compressEnd >= n {
 		compressEnd = n - 1
 	}
+
 	var sb strings.Builder
 	for i := 0; i < compressEnd; i++ {
 		content := msgs[i].Content
@@ -141,12 +152,12 @@ func (ce *CompressorEngine) mermaidCompress(ctx context.Context, msgs []Message)
 }
 
 func (ce *CompressorEngine) slidingCompress(msgs []Message) (*CompressionResult, error) {
-	if len(msgs) == 0 {
-		return nil, fmt.Errorf("no messages to compress")
+	if len(msgs) < 2 {
+		return nil, fmt.Errorf("need at least 2 messages to compress, got %d", len(msgs))
 	}
 	keepRecent := 20
 	if keepRecent >= len(msgs) {
-		keepRecent = len(msgs) - 1
+		keepRecent = 1
 	}
 	truncated := msgs[:len(msgs)-keepRecent]
 	kept := msgs[len(msgs)-keepRecent:]
@@ -183,5 +194,8 @@ func (ce *CompressorEngine) slidingCompress(msgs []Message) (*CompressionResult,
 }
 
 func estimateTokens(text string) int {
-	return len(text) / 4
+	if len(text) == 0 {
+		return 0
+	}
+	return len(text)/4 + 1
 }
