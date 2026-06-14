@@ -135,7 +135,7 @@ type L3Persona struct {
 }
 
 type RecallResult struct {
-    Memories             []L1Memory  `json:"memories"`
+    Memories             []*L1Memory  `json:"memories"`
     Scene                *L2Scene    `json:"scene,omitempty"`
     Persona              *L3Persona  `json:"persona,omitempty"`
     AppendSystemContext  string      `json:"append_system_context,omitempty"`

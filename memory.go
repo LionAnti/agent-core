@@ -51,7 +51,7 @@ func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassif
 	if intent.Type == IntentRecall || intent.Strategy != "" {
 		memories, err := mr.store.SearchL1(ctx, tenantID, userID, intent.Strategy, 5)
 		if err == nil {
-			result.Memories = derefMemories(memories)
+			result.Memories = memories
 			for i := range memories {
 				mr.store.IncrementL1Recall(ctx, memories[i].ID)
 			}
