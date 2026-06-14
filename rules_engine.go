@@ -99,6 +99,30 @@ func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 	return results
 }
 
+
+func (e *RulesEngine) ListRules() []*Rule {
+    if e == nil {
+        return nil
+    }
+    e.mu.RLock()
+    defer e.mu.RUnlock()
+    result := make([]*Rule, len(e.rules))
+    for i, r := range e.rules {
+        cp := *r
+        result[i] = &cp
+    }
+    return result
+}
+
+func (e *RulesEngine) CountRules() int {
+    if e == nil {
+        return 0
+    }
+    e.mu.RLock()
+    defer e.mu.RUnlock()
+    return len(e.rules)
+}
+
 func (e *RulesEngine) MatchPre(ctx *RuleContext) []RuleOutput { return e.Match(ctx) }
 func (e *RulesEngine) MatchPost(ctx *RuleContext) []RuleOutput { return e.Match(ctx) }
 

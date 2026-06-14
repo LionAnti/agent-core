@@ -124,7 +124,8 @@ type Logger interface {
 	Error(msg string, keysAndValues ...any)
 }
 
-// MetricsCollector records performance metrics (optional, noop by default).
+// MetricsCollector records performance metrics.
+// Implementations MUST be safe for concurrent use by multiple goroutines.
 type MetricsCollector interface {
 	RecordLatency(name string, ms float64)
 	RecordTokenUsage(prompt, completion int)

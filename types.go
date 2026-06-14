@@ -2,6 +2,13 @@ package agentcore
 
 import "context"
 
+// Predefined message roles.
+const (
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleSystem    = "system"
+)
+
 type Message struct {
     Role       string `json:"role"`
     Content    string `json:"content"`
