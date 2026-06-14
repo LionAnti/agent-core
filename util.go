@@ -19,7 +19,7 @@ func now() int64 {
 	return time.Now().UnixMilli()
 }
 
-func EstimateTokens(text string) int {
+func estimateTokens(text string) int {
 	if len(text) == 0 {
 		return 0
 	}

@@ -17,7 +17,7 @@ func NewMemoryPipeline(store MemoryStore, logger Logger) *MemoryPipeline {
 
 func extractTenantID(sessionKey string) string {
 	parts := strings.SplitN(sessionKey, "/", 3)
-	if len(parts) >= 1 {
+	if len(parts) >= 1 && parts[0] != "" {
 		return parts[0]
 	}
 	return ""
@@ -25,20 +25,16 @@ func extractTenantID(sessionKey string) string {
 
 func extractUserID(sessionKey string) string {
 	parts := strings.SplitN(sessionKey, "/", 3)
-	if len(parts) >= 2 {
+	if len(parts) >= 2 && parts[1] != "" {
 		return parts[1]
 	}
 	return ""
 }
 
 func (p *MemoryPipeline) ExtractL1(ctx context.Context, records []L0Record) error {
-	if len(records) < 3 {
+	if len(records) < 3 || len(records) == 0 {
 		return nil
 	}
-	if len(records) == 0 {
-		return nil
-	}
-
 	var sb strings.Builder
 	for _, r := range records {
 		sb.WriteString(r.Role + ": " + r.Content + "\n")
@@ -47,7 +43,6 @@ func (p *MemoryPipeline) ExtractL1(ctx context.Context, records []L0Record) erro
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
-
 	sessionKey := records[0].SessionKey
 	return p.store.SaveL1(ctx, &L1Memory{
 		ID:        newID(),
@@ -82,7 +77,9 @@ func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassif
 		if err == nil {
 			result.Memories = memories
 			for i := range memories {
-				mr.store.IncrementL1Recall(ctx, memories[i].ID)
+				if incErr := mr.store.IncrementL1Recall(ctx, memories[i].ID); incErr != nil {
+					mr.logger.Warn("failed to increment L1 recall", "id", memories[i].ID, "error", incErr)
+				}
 			}
 		}
 	}

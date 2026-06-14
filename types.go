@@ -301,7 +301,7 @@ const (
 
 // Session represents a conversation session.
 // Send is safe for sequential calls (mutex-protected).
-// Do not call Send concurrently from multiple goroutines.
+// Concurrent calls from multiple goroutines will block; prefer sequential use.
 type Session struct {
     ID         string        `json:"id"`
     TenantID   string        `json:"tenant_id"`

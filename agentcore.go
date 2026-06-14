@@ -93,7 +93,9 @@ func New(cfg Config) (*AgentCore, error) {
 			cfg.Logger.Warn("failed to load user rules", "error", err)
 		} else {
 			for i := range userRules {
-				re.AddRule(userRules[i])
+				if addErr := re.AddRule(userRules[i]); addErr != nil {
+					cfg.Logger.Warn("failed to add rule", "name", userRules[i].Name, "error", addErr)
+				}
 			}
 		}
 	}
@@ -146,7 +148,9 @@ func New(cfg Config) (*AgentCore, error) {
 	}, nil
 }
 
-func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) *Session {
+// NewSession creates and returns a new session.
+// Returns ErrAgentClosed if the core has been shut down.
+func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) (*Session, error) {
 	s := &Session{
 		ID:        newID(),
 		TenantID:  tenantID,
@@ -157,12 +161,12 @@ func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) *
 	for _, opt := range opts {
 		opt(s)
 	}
-	si := c.openSession(s)
-	if si == nil {
-		return nil // core is closed
+	si, err := c.openSession(s)
+	if err != nil {
+		return nil, err
 	}
 	s.internal = si
-	return s
+	return s, nil
 }
 
 func (c *AgentCore) Provider() *ProviderManager { return c.provider }
@@ -177,7 +181,7 @@ func (c *AgentCore) HarnessState(currentTokens int) *HarnessState {
 }
 
 // Close gracefully shuts down the AgentCore, closing all active sessions.
-// After Close returns, NewSession returns nil.
+// After Close returns, NewSession returns ErrAgentClosed.
 func (c *AgentCore) Close(ctx context.Context) error {
 	c.sessionMu.Lock()
 	c.closed = true
@@ -199,9 +203,7 @@ func (c *AgentCore) Close(ctx context.Context) error {
 	return nil
 }
 
-// ActiveSessionCount returns the number of active sessions.
 // HealthCheck verifies the core is initialized and able to process requests.
-// Returns nil if healthy, or an error describing the problem.
 func (c *AgentCore) HealthCheck(ctx context.Context) error {
 	if c.closed {
 		return ErrAgentClosed
@@ -215,6 +217,7 @@ func (c *AgentCore) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// ActiveSessionCount returns the number of active sessions.
 func (c *AgentCore) ActiveSessionCount() int {
 	c.sessionMu.RLock()
 	defer c.sessionMu.RUnlock()

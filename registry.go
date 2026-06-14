@@ -66,10 +66,11 @@ func (r *ToolRegistry) Get(ctx context.Context, tenantID, name string) (*ToolSpe
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal tool: %w", err)
 	}
+	copy := copyTool(&tool)
 	r.mu.Lock()
-	r.cache[key] = copyTool(&tool)
+	r.cache[key] = copy
 	r.mu.Unlock()
-	return &tool, nil
+	return copy, nil
 }
 
 func (r *ToolRegistry) List(ctx context.Context, tenantID string) ([]ToolSpec, error) {

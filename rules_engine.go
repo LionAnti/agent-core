@@ -1,6 +1,7 @@
 package agentcore
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"sync"
@@ -19,13 +20,18 @@ func NewRulesEngine() *RulesEngine {
 	}
 }
 
-func (e *RulesEngine) AddRule(r *Rule) {
+func (e *RulesEngine) AddRule(r *Rule) error {
 	if r.Pattern != "" {
-		e.cache.set(r.Name, regexp.MustCompile(r.Pattern))
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			return fmt.Errorf("compile rule %q pattern %q: %w", r.Name, r.Pattern, err)
+		}
+		e.cache.set(r.Name, re)
 	}
 	e.mu.Lock()
 	e.rules = append(e.rules, r)
 	e.mu.Unlock()
+	return nil
 }
 
 func (e *RulesEngine) RemoveRule(name string) {
@@ -53,6 +59,8 @@ func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 		if r.Pattern != "" {
 			re := e.cache.get(r.Name)
 			if re == nil {
+				// Compile-builtin rules are guaranteed valid, user rules validated at AddRule time.
+				// This fallback handles the builtin rules which compile at init.
 				re = regexp.MustCompile(r.Pattern)
 				e.cache.set(r.Name, re)
 			}

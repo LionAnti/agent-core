@@ -109,7 +109,7 @@ func TestOffloadDecider_Aggressive(t *testing.T) {
 
 func TestUtilityTracker_Score(t *testing.T) {
     ut := &DefaultUtilityTracker{defaultHalfLife: 7.0}
-    score := ut.Score("test-1", 5, 0)
+    score, _ := ut.Score(context.Background(), "test-1", 5, 0)
     if score.Score <= 0 {
         t.Fatalf("expected positive score, got %f", score.Score)
     }
@@ -124,7 +124,7 @@ func TestUtilityTracker_Decay(t *testing.T) {
         {RecordID: "a", Score: 1.0, HalfLifeDays: 7.0},
         {RecordID: "b", Score: 0.5, HalfLifeDays: 7.0},
     }
-    decayed := ut.Decay(scores, 7.0)
+    decayed, _ := ut.Decay(context.Background(), scores, 7.0)
     if decayed[0].Score >= 1.0 {
         t.Fatal("score should have decayed below 1.0")
     }

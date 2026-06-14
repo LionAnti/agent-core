@@ -73,8 +73,12 @@ func Example() {
     }
     defer core.Close(context.Background())
 
-    sess := core.NewSession("test-tenant", "test-user",
+    sess, err := core.NewSession("test-tenant", "test-user",
         agentcore.WithModel("test-model"))
+    if err != nil {
+        fmt.Printf("FAIL: %v\n", err)
+        return
+    }
     result, err := sess.Send(context.Background(), "Hello", nil)
     if err != nil {
         fmt.Printf("FAIL: %v\n", err)
@@ -111,7 +115,10 @@ func TestSessionLifecycle(t *testing.T) {
     }
     defer core.Close(context.Background())
 
-    sess := core.NewSession("t", "u", agentcore.WithModel("m"))
+    sess, err := core.NewSession("t", "u", agentcore.WithModel("m"))
+    if err != nil {
+        t.Fatal(err)
+    }
     if sess.Status != agentcore.SessionActive {
         t.Fatal("session should be active")
     }
@@ -134,7 +141,7 @@ func TestSessionAlreadyEnded(t *testing.T) {
         RegistryStore: &mockStore{},
         MemoryStore:   &mockStore{},
     })
-    sess := core.NewSession("t", "u")
+    sess, _ := core.NewSession("t", "u")
     sess.Close()
     _, err := sess.Send(context.Background(), "fail", nil)
     if err == nil {
@@ -155,9 +162,9 @@ func TestGracefulShutdown(t *testing.T) {
     if err := core.Close(ctx); err != nil {
         t.Fatal(err)
     }
-    sess := core.NewSession("t", "u")
-    if sess != nil {
-        t.Fatal("expected nil session after shutdown")
+    _, err := core.NewSession("t", "u")
+    if err == nil {
+        t.Fatal("expected error after shutdown")
     }
 }
 
@@ -173,18 +180,19 @@ func TestHealthCheck(t *testing.T) {
     }
 }
 
-func TestHealthCheck_NilLLM(t *testing.T) {
-    // Must use New() to ensure minimal valid core
+
+
+func TestNewSessionAfterClose(t *testing.T) {
     core, _ := agentcore.New(agentcore.Config{
         LLMClient:     &mockLLM{},
         ProviderStore: &mockStore{},
         RegistryStore: &mockStore{},
         MemoryStore:   &mockStore{},
     })
-    // Override LLM to nil to test health check failure path
-    // HealthCheck checks c.closed, which is false - should pass
-    if err := core.HealthCheck(context.Background()); err != nil {
-        t.Fatal(err)
+    core.Close(context.Background())
+    _, err := core.NewSession("t", "u")
+    if err == nil {
+        t.Fatal("expected error creating session after close")
     }
 }
 

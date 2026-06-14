@@ -182,20 +182,14 @@ func (ce *CompressorEngine) slidingCompress(msgs []Message) (*CompressionResult,
 	if savings < 0 {
 		savings = 0
 	}
-	var content string
+	var sb strings.Builder
 	for _, m := range truncated {
-		content += fmt.Sprintf("[Truncated %s message]\n", m.Role)
+		sb.WriteString(fmt.Sprintf("[Truncated %s message]\n", m.Role))
 	}
+	content := sb.String()
 	return &CompressionResult{
 		Strategy: CompressionSlidingWindow, TokenSavings: savings,
 		NewTokenTotal: newTokens, Content: content,
 		ReplaceFrom: 0, ReplaceTo: len(truncated),
 	}, nil
-}
-
-func estimateTokens(text string) int {
-	if len(text) == 0 {
-		return 0
-	}
-	return len(text)/4 + 1
 }

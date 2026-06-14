@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	defaultCallTimeout  = 30 * time.Second
+	defaultCallTimeout = 30 * time.Second
+	maxSessionMessages = 1000
 )
 
 type sessionInternal struct {
@@ -20,16 +21,16 @@ type sessionInternal struct {
 	tokenSaved int
 }
 
-func (c *AgentCore) openSession(s *Session) *sessionInternal {
+func (c *AgentCore) openSession(s *Session) (*sessionInternal, error) {
 	si := &sessionInternal{core: c, session: s}
 	c.sessionMu.Lock()
 	if c.closed {
 		c.sessionMu.Unlock()
-		return nil
+		return nil, ErrAgentClosed
 	}
 	c.sessions[s.ID] = si
 	c.sessionMu.Unlock()
-	return si
+	return si, nil
 }
 
 func (c *AgentCore) removeSession(id string) {
@@ -54,6 +55,7 @@ func runStageVoid(name string, fn func() error) error {
 	return err
 }
 
+// Send executes the full pipeline and returns the LLM response with timing/stats.
 func (si *sessionInternal) Send(ctx context.Context, input string, history []Message) (result *SendResult, err error) {
 	si.mu.Lock()
 	defer func() {
@@ -73,8 +75,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	log := si.core.logger
 	svcCtx := &RuleContext{TenantID: si.session.TenantID, UserID: si.session.UserID}
 
-	// Ensure context has a timeout for external calls.
-	// Use a single reusable timeout context to avoid leaking contexts per stage.
 	cancel := ensureTimeout(&ctx, defaultCallTimeout)
 	if cancel != nil {
 		defer cancel()
@@ -112,15 +112,16 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	log.Debug("intent", "type", intent.Type, "confidence", intent.Confidence)
 
 	// Stage 3: Tool Selection
+	var matchedTools []ToolSpec
 	if err := runStageVoid("tool-select", func() error {
 		t0 := time.Now()
 		tools, listErr := si.core.registry.List(ctx, si.session.TenantID)
 		if listErr != nil {
 			return listErr
 		}
-		matchedTools, selectErr := si.core.toolSelector.Select(ctx, intent, tools)
+		var selectErr error
+		matchedTools, selectErr = si.core.toolSelector.Select(ctx, intent, tools)
 		timing.ToolSelect = time.Since(t0).Milliseconds()
-		_ = matchedTools
 		return selectErr
 	}); err != nil {
 		log.Warn("tool selection failed, continuing", "error", err)
@@ -141,15 +142,13 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 
 	// Stage 5: Density Estimation
+	var density *DensitySignals
 	if err := runStageVoid("density", func() error {
 		t0 := time.Now()
-		density, densityErr := si.core.densityEstimator.Estimate(ctx, msgs, harnessState)
+		var densityErr error
+		density, densityErr = si.core.densityEstimator.Estimate(ctx, msgs, harnessState)
 		timing.Density = time.Since(t0).Milliseconds()
-		if densityErr != nil {
-			return densityErr
-		}
-		_ = density
-		return nil
+		return densityErr
 	}); err != nil {
 		return nil, fmt.Errorf("density estimation: %w", err)
 	}
@@ -159,7 +158,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	if err := runStageVoid("offload", func() error {
 		t0 := time.Now()
 		var offloadErr error
-		decision, offloadErr = si.core.offloadDecider.Decide(ctx, nil, harnessState)
+		decision, offloadErr = si.core.offloadDecider.Decide(ctx, density, harnessState)
 		timing.Offload = time.Since(t0).Milliseconds()
 		return offloadErr
 	}); err != nil {
@@ -195,7 +194,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	var resp *ChatResponse
 	if err := runStageVoid("llm-call", func() error {
 		t0 := time.Now()
-		llmReq := buildChatRequest(si.session, msgs, result.Recall)
+		llmReq := buildChatRequest(si.session, msgs, result.Recall, matchedTools)
 		var llmErr error
 		resp, llmErr = si.core.llmClient.Chat(ctx, llmReq)
 		timing.LLMCall = time.Since(t0).Milliseconds()
@@ -226,7 +225,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	result.Timing = timing
 
-	// Record L0 (best-effort, non-fatal)
+	// Record L0 (best-effort)
 	if si.core.l0Store != nil {
 		recs := []L0Record{
 			{ID: newID(), SessionKey: si.session.ID, Role: "user", Content: input, RecordedAt: now()},
@@ -234,10 +233,17 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		}
 		if saveErr := si.core.l0Store.Save(ctx, recs); saveErr != nil {
 			log.Warn("failed to save L0 records", "error", saveErr)
+		} else if si.core.memStore != nil {
+			// Trigger L1 extraction from L0 records
+			pipe := NewMemoryPipeline(si.core.memStore, log)
+			if extractErr := pipe.ExtractL1(ctx, recs); extractErr != nil {
+				log.Warn("L1 extraction failed", "error", extractErr)
+			}
 		}
 	}
 
-	si.msgs = append(si.msgs, Message{Role: "assistant", Content: resp.Content})
+	// Cap message history to prevent unbounded growth
+	si.msgs = appendMessage(si.msgs, Message{Role: "assistant", Content: resp.Content}, maxSessionMessages)
 	si.core.metrics.RecordLatency("send_total", float64(time.Since(start).Milliseconds()))
 	si.core.metrics.RecordTokenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	return result, nil
@@ -253,8 +259,9 @@ func (si *sessionInternal) Close() {
 	si.core.removeSession(si.session.ID)
 }
 
-func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *ChatRequest {
-	chatMsgs := make([]ChatMessage, 0, len(msgs)+2)
+// buildChatRequest constructs the ChatRequest with recall context and tool descriptions.
+func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult, tools []ToolSpec) *ChatRequest {
+	chatMsgs := make([]ChatMessage, 0, len(msgs)+4)
 	if recall != nil {
 		if recall.PrependContext != "" {
 			chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: recall.PrependContext})
@@ -262,6 +269,14 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *Chat
 		if recall.AppendSystemContext != "" {
 			chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: recall.AppendSystemContext})
 		}
+	}
+	// Add available tool descriptions so the LLM knows what it can call
+	if len(tools) > 0 {
+		var toolDesc string
+		for _, t := range tools {
+			toolDesc += fmt.Sprintf("- %s: %s\n", t.Name, t.Description)
+		}
+		chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: "Available tools:\n" + toolDesc})
 	}
 	for i := range msgs {
 		chatMsgs = append(chatMsgs, ChatMessage{Role: msgs[i].Role, Content: msgs[i].Content})
@@ -273,8 +288,7 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *Chat
 	return req
 }
 
-// ensureTimeout adds a timeout to ctx if it doesn't already have one.
-// Returns a cancel function that MUST be called by the caller, or nil if no timeout was added.
+// ensureTimeout wraps ctx with a timeout if it doesn't have one. Caller must call cancel.
 func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) {
 	if _, ok := (*ctx).Deadline(); !ok {
 		newCtx, c := context.WithTimeout(*ctx, timeout)
@@ -282,4 +296,18 @@ func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) 
 		return c
 	}
 	return nil
+}
+
+// appendMessage appends a message, keeping at most max messages (oldest dropped).
+func appendMessage(msgs []Message, msg Message, max int) []Message {
+	if max <= 0 {
+		return append(msgs, msg)
+	}
+	if len(msgs) < max {
+		return append(msgs, msg)
+	}
+	// Drop oldest, keep newest (max-1) + new
+	n := copy(msgs, msgs[1:])
+	msgs = msgs[:n]
+	return append(msgs, msg)
 }

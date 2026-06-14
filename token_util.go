@@ -6,7 +6,7 @@ func estimateMessagesTokenCount(msgs []Message) int {
 		if m.TokenCount > 0 {
 			total += m.TokenCount
 		} else {
-			total += len(m.Content)/4 + 1
+			total += estimateTokens(m.Content)
 		}
 	}
 	return total
