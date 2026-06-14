@@ -5,239 +5,139 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/agent-core/compressor"
+	"github.com/agent-core/harness"
+	"github.com/agent-core/memory"
+	"github.com/agent-core/provider"
+	"github.com/agent-core/registry"
+	"github.com/agent-core/rules"
+	"github.com/agent-core/types"
 )
 
 type AgentCore struct {
 	config           Config
-	intentClassifier IntentClassifier
-	toolSelector     ToolSelector
-	densityEstimator DensityEstimator
-	offloadDecider   OffloadDecider
-	memoryRecall     MemoryRecall
-	compressor       Compressor
-	rules            *RulesEngine
-	registry         *ToolRegistry
-	provider         *ProviderManager
-	llmClient        LLMClient
-	memStore         MemoryStore
-	vecStore         VectorStore
-	provStore        ProviderStore
-	regStore         RegistryStore
-	l0Store          L0Store
-	logger           Logger
-	metrics          MetricsCollector
+	intentClassifier types.IntentClassifier
+	toolSelector     types.ToolSelector
+	densityEstimator types.DensityEstimator
+	offloadDecider   types.OffloadDecider
+	memoryRecall     types.MemoryRecall
+	compressor       types.Compressor
+	rules            *rules.Engine
+	gtregistry       *registry.ToolRegistry
+	provider         *provider.Manager
+	llmClient        types.LLMClient
+	memStore         types.MemoryStore
+	vecStore         types.VectorStore
+	provStore        types.ProviderStore
+	regStore         types.RegistryStore
+	l0Store          types.L0Store
+	logger           types.Logger
+	metrics          types.MetricsCollector
 	sessionMu        sync.RWMutex
 	sessions         map[string]*sessionInternal
 	closed           bool
 }
 
 type Config struct {
-	LLMClient           LLMClient
-	ProviderStore       ProviderStore
-	RuleStore           RuleStore
-	RegistryStore       RegistryStore
-	MemoryStore         MemoryStore
-	L0Store             L0Store
-	VectorStore         VectorStore
-	Logger              Logger
-	MetricsCollector    MetricsCollector
+	LLMClient           types.LLMClient
+	ProviderStore       types.ProviderStore
+	RuleStore           types.RuleStore
+	RegistryStore       types.RegistryStore
+	MemoryStore         types.MemoryStore
+	L0Store             types.L0Store
+	VectorStore         types.VectorStore
+	Logger              types.Logger
+	MetricsCollector    types.MetricsCollector
 	ContextWindow       int
 	MildThreshold       float64
 	AggressiveThreshold float64
-	IntentClassifier    IntentClassifier
-	ToolSelector        ToolSelector
-	DensityEstimator    DensityEstimator
-	OffloadDecider      OffloadDecider
-	MemoryRecall        MemoryRecall
+	IntentClassifier    types.IntentClassifier
+	ToolSelector        types.ToolSelector
+	DensityEstimator    types.DensityEstimator
+	OffloadDecider      types.OffloadDecider
+	MemoryRecall        types.MemoryRecall
 }
 
 func New(cfg Config) (*AgentCore, error) {
-	if cfg.LLMClient == nil {
-		return nil, fmt.Errorf("agentcore: %w: LLMClient is required", ErrInvalidConfig)
-	}
-	if cfg.ProviderStore == nil {
-		return nil, fmt.Errorf("agentcore: %w: ProviderStore is required", ErrInvalidConfig)
-	}
-	if cfg.RegistryStore == nil {
-		return nil, fmt.Errorf("agentcore: %w: RegistryStore is required", ErrInvalidConfig)
-	}
-	if cfg.MemoryStore == nil {
-		return nil, fmt.Errorf("agentcore: %w: MemoryStore is required", ErrInvalidConfig)
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = NoopLogger{}
-	}
-	if cfg.MetricsCollector == nil {
-		cfg.MetricsCollector = NoopMetricsCollector{}
-	}
-	if cfg.ContextWindow <= 0 {
-		cfg.ContextWindow = 128000
-	}
-	if cfg.MildThreshold <= 0 {
-		cfg.MildThreshold = 0.5
-	}
-	if cfg.AggressiveThreshold <= 0 {
-		cfg.AggressiveThreshold = 0.85
-	}
-	if cfg.MildThreshold >= cfg.AggressiveThreshold {
-		return nil, fmt.Errorf("agentcore: %w: MildThreshold (%0.2f) must be less than AggressiveThreshold (%0.2f)", ErrInvalidConfig, cfg.MildThreshold, cfg.AggressiveThreshold)
-	}
+	if cfg.LLMClient == nil { return nil, fmt.Errorf("agentcore: %w: LLMClient required", types.ErrInvalidConfig) }
+	if cfg.ProviderStore == nil { return nil, fmt.Errorf("agentcore: %w: ProviderStore required", types.ErrInvalidConfig) }
+	if cfg.RegistryStore == nil { return nil, fmt.Errorf("agentcore: %w: RegistryStore required", types.ErrInvalidConfig) }
+	if cfg.MemoryStore == nil { return nil, fmt.Errorf("agentcore: %w: MemoryStore required", types.ErrInvalidConfig) }
+	if cfg.Logger == nil { cfg.Logger = &noopLogger{} }
+	if cfg.MetricsCollector == nil { cfg.MetricsCollector = &noopMetricsCollector{} }
+	if cfg.ContextWindow <= 0 { cfg.ContextWindow = 128000 }
+	if cfg.MildThreshold <= 0 { cfg.MildThreshold = 0.5 }
+	if cfg.AggressiveThreshold <= 0 { cfg.AggressiveThreshold = 0.85 }
+	if cfg.MildThreshold >= cfg.AggressiveThreshold { return nil, fmt.Errorf("agentcore: thresholds invalid: %0.2f >= %0.2f", cfg.MildThreshold, cfg.AggressiveThreshold) }
 
-	re := NewRulesEngine()
+	re := rules.NewEngine()
 	if cfg.RuleStore != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		userRules, err := cfg.RuleStore.LoadRules(ctx)
-		cancel()
-		if err != nil {
-			cfg.Logger.Warn("failed to load user rules", "error", err)
-		} else {
-			for i := range userRules {
-				if userRules[i] == nil {
-					cfg.Logger.Warn("skipping nil rule from store")
-					continue
-				}
-				if addErr := re.AddRule(userRules[i]); addErr != nil {
-					cfg.Logger.Warn("failed to add rule", "name", userRules[i].Name, "error", addErr)
-				}
-			}
+		ur, err := cfg.RuleStore.LoadRules(ctx); cancel()
+		if err != nil { cfg.Logger.Warn("failed to load rules", "error", err) } else {
+			for i := range ur { if ur[i]==nil { continue }; if ae := re.AddRule(ur[i]); ae!=nil { cfg.Logger.Warn("add rule", "error", ae) } }
 		}
 	}
+	pm := provider.NewManager(cfg.ProviderStore, cfg.Logger)
+	tr := registry.NewToolRegistry(cfg.RegistryStore, cfg.Logger)
+	comp := compressor.NewEngine(cfg.LLMClient, cfg.Logger)
 
-	pm := NewProviderManager(cfg.ProviderStore, cfg.Logger)
-	tr := NewToolRegistry(cfg.RegistryStore, cfg.Logger)
-	comp := NewCompressor(cfg.LLMClient, cfg.Logger)
-
-	ic := cfg.IntentClassifier
-	if ic == nil {
-		ic = NewHybridClassifier(re, cfg.LLMClient)
-	}
-	ts := cfg.ToolSelector
-	if ts == nil {
-		ts = NewRuleToolSelector(re)
-	}
-	de := cfg.DensityEstimator
-	if de == nil {
-		de = NewDefaultDensityEstimator()
-	}
-	od := cfg.OffloadDecider
-	if od == nil {
-		od = NewDefaultOffloadDecider(cfg.MildThreshold, cfg.AggressiveThreshold)
-	}
-	mr := cfg.MemoryRecall
-	if mr == nil {
-		mr = NewDefaultMemoryRecall(cfg.MemoryStore, cfg.VectorStore, cfg.Logger)
-	}
+	ic := cfg.IntentClassifier; if ic == nil { ic = harness.NewClassifier(re.Match, cfg.LLMClient) }
+	ts := cfg.ToolSelector; if ts == nil { ts = registry.NewRuleToolSelector(re.Match) }
+	de := cfg.DensityEstimator; if de == nil { de = harness.NewDensityEstimator() }
+	od := cfg.OffloadDecider; if od == nil { od = harness.NewOffloadDecider(cfg.MildThreshold, cfg.AggressiveThreshold) }
+	mr := cfg.MemoryRecall; if mr == nil { mr = memory.NewRecall(cfg.MemoryStore, cfg.VectorStore, cfg.Logger) }
 
 	return &AgentCore{
-		config:           cfg,
-		intentClassifier: ic,
-		toolSelector:     ts,
-		densityEstimator: de,
-		offloadDecider:   od,
-		memoryRecall:     mr,
-		compressor:       comp,
-		rules:            re,
-		registry:         tr,
-		provider:         pm,
-		llmClient:        cfg.LLMClient,
-		memStore:         cfg.MemoryStore,
-		vecStore:         cfg.VectorStore,
-		provStore:        cfg.ProviderStore,
-		regStore:         cfg.RegistryStore,
-		l0Store:          cfg.L0Store,
-		logger:           cfg.Logger,
-		metrics:          cfg.MetricsCollector,
-		sessions:         make(map[string]*sessionInternal),
+		config: cfg, intentClassifier: ic, toolSelector: ts, densityEstimator: de,
+		offloadDecider: od, memoryRecall: mr, compressor: comp, rules: re,
+		gtregistry: tr, provider: pm, llmClient: cfg.LLMClient,
+		memStore: cfg.MemoryStore, vecStore: cfg.VectorStore, provStore: cfg.ProviderStore,
+		regStore: cfg.RegistryStore, l0Store: cfg.L0Store,
+		logger: cfg.Logger, metrics: cfg.MetricsCollector,
+		sessions: make(map[string]*sessionInternal),
 	}, nil
 }
 
-func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) (*Session, error) {
-	if c == nil {
-		return nil, ErrAgentClosed
-	}
-	s := &Session{
-		ID:        newID(),
-		TenantID:  tenantID,
-		UserID:    userID,
-		Status:    SessionActive,
-		CreatedAt: now(),
-	}
-	for _, opt := range opts {
-		opt(s)
-	}
+func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) (*types.Session, error) {
+	if c == nil { return nil, types.ErrAgentClosed }
+	s := &types.Session{ID: newID(), TenantID: tenantID, UserID: userID, Status: types.SessionActive, CreatedAt: now()}
+	for _, o := range opts { o(s) }
 	si, err := c.openSession(s)
-	if err != nil {
-		return nil, err
-	}
-	s.internal = si
+	if err != nil { return nil, err }
+	s.Internal = si
 	return s, nil
 }
 
-func (c *AgentCore) Provider() *ProviderManager {
-	if c == nil { return nil }
-	return c.provider
-}
+func (c *AgentCore) Provider() *provider.Manager     { if c==nil { return nil }; return c.provider }
+func (c *AgentCore) Registry() *registry.ToolRegistry { if c==nil { return nil }; return c.gtregistry }
+func (c *AgentCore) Rules() *rules.Engine             { if c==nil { return nil }; return c.rules }
 
-func (c *AgentCore) Registry() *ToolRegistry {
-	if c == nil { return nil }
-	return c.registry
-}
-
-func (c *AgentCore) Rules() *RulesEngine {
-	if c == nil { return nil }
-	return c.rules
-}
-
-func (c *AgentCore) HarnessState(currentTokens int) *HarnessState {
-	if c == nil { return nil }
-	return &HarnessState{
-		CurrentTokens: currentTokens,
-		ContextWindow: c.config.ContextWindow,
-	}
+func (c *AgentCore) HarnessState(ct int) *types.HarnessState {
+	if c==nil { return nil }
+	return &types.HarnessState{CurrentTokens: ct, ContextWindow: c.config.ContextWindow}
 }
 
 func (c *AgentCore) Close(ctx context.Context) error {
-	if c == nil {
-		return nil
-	}
-	c.sessionMu.Lock()
-	c.closed = true
-	sessions := make([]*sessionInternal, 0, len(c.sessions))
-	for _, si := range c.sessions {
-		sessions = append(sessions, si)
-	}
+	if c==nil { return nil }
+	c.sessionMu.Lock(); c.closed = true
+	ss := make([]*sessionInternal, 0, len(c.sessions))
+	for _, si := range c.sessions { ss = append(ss, si) }
 	c.sessionMu.Unlock()
-
-	for _, si := range sessions {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		si.Close()
-	}
-	if c.logger != nil {
-		c.logger.Info("agentcore closed", "sessions_closed", len(sessions))
-	}
+	for _, si := range ss { select { case <-ctx.Done(): return ctx.Err(); default: }; si.Close() }
+	if c.logger != nil { c.logger.Info("agentcore closed", "count", len(ss)) }
 	return nil
 }
 
 func (c *AgentCore) HealthCheck(ctx context.Context) error {
-	if c == nil || c.closed {
-		return ErrAgentClosed
-	}
-	if c.llmClient == nil {
-		return fmt.Errorf("agentcore: %w: LLMClient is nil", ErrInvalidConfig)
-	}
-	if c.provider == nil {
-		return fmt.Errorf("agentcore: %w: ProviderManager is nil", ErrInvalidConfig)
-	}
+	if c==nil||c.closed { return types.ErrAgentClosed }
+	if c.llmClient==nil { return fmt.Errorf("health: %w: LLM nil", types.ErrInvalidConfig) }
 	return nil
 }
 
 func (c *AgentCore) ActiveSessionCount() int {
-	if c == nil { return 0 }
-	c.sessionMu.RLock()
-	defer c.sessionMu.RUnlock()
+	if c==nil { return 0 }
+	c.sessionMu.RLock(); defer c.sessionMu.RUnlock()
 	return len(c.sessions)
 }

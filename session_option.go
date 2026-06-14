@@ -1,13 +1,15 @@
 package agentcore
 
-type SessionOption func(*Session)
+import "github.com/agent-core/types"
+
+type SessionOption func(*types.Session)
 
 func WithModel(model string) SessionOption {
-    return func(s *Session) { s.Model = model }
+	return func(s *types.Session) { s.Model = model }
 }
 func WithProviderID(providerID string) SessionOption {
-    return func(s *Session) { s.ProviderID = providerID }
+	return func(s *types.Session) { s.ProviderID = providerID }
 }
 func WithSessionID(id string) SessionOption {
-    return func(s *Session) { s.ID = id }
+	return func(s *types.Session) { s.ID = id }
 }

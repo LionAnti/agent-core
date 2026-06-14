@@ -6,314 +6,190 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agent-core/memory"
+	"github.com/agent-core/types"
 )
 
-const (
-	defaultCallTimeout = 30 * time.Second
-	maxSessionMessages = 1000
-)
+const defaultCallTimeout = 30 * time.Second
+const maxSessionMessages = 1000
 
 type sessionInternal struct {
 	core       *AgentCore
-	session    *Session
+	session    *types.Session
 	mu         sync.Mutex
-	msgs       []Message
+	msgs       []types.Message
 	offloadCnt int
 	tokenSaved int
 }
 
-func (c *AgentCore) openSession(s *Session) (*sessionInternal, error) {
-	if c == nil {
-		return nil, ErrAgentClosed
-	}
+type SessionInternal = sessionInternal
+
+func (c *AgentCore) openSession(s *types.Session) (*sessionInternal, error) {
+	if c==nil { return nil, types.ErrAgentClosed }
 	si := &sessionInternal{core: c, session: s}
 	c.sessionMu.Lock()
-	if c.closed {
-		c.sessionMu.Unlock()
-		return nil, ErrAgentClosed
-	}
-	if c.sessions == nil {
-		c.sessions = make(map[string]*sessionInternal)
-	}
-	c.sessions[s.ID] = si
-	c.sessionMu.Unlock()
+	if c.closed { c.sessionMu.Unlock(); return nil, types.ErrAgentClosed }
+	if c.sessions==nil { c.sessions = make(map[string]*sessionInternal) }
+	c.sessions[s.ID] = si; c.sessionMu.Unlock()
 	return si, nil
 }
 
 func (c *AgentCore) removeSession(id string) {
-	if c == nil { return }
-	c.sessionMu.Lock()
-	delete(c.sessions, id)
-	c.sessionMu.Unlock()
+	if c==nil { return }; c.sessionMu.Lock(); delete(c.sessions, id); c.sessionMu.Unlock()
 }
 
-func runStage[T any](name string, fn func() (T, error)) (result T, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in stage %q: %v", name, r)
-		}
-	}()
-	return fn()
-}
-
-func runStageVoid(name string, fn func() error) error {
-	_, err := runStage(name, func() (struct{}, error) {
-		return struct{}{}, fn()
-	})
-	return err
-}
-
-func (si *sessionInternal) Send(ctx context.Context, input string, history []Message) (result *SendResult, err error) {
-	if si == nil {
-		return nil, ErrSessionNotFound
-	}
+func (si *sessionInternal) Send(ctx context.Context, input string, history []types.Message) (*types.SendResult, error) {
+	if si==nil { return nil, types.ErrSessionNotFound }
 	si.mu.Lock()
-	defer func() {
-		si.mu.Unlock()
-		if r := recover(); r != nil {
-			err = fmt.Errorf("critical panic in session.Send: %v", r)
-		}
-	}()
+	defer func() { si.mu.Unlock(); recover() }()
+	if si.session.Status != types.SessionActive { return nil, types.ErrSessionAlreadyEnded }
 
-	if si.session.Status != SessionActive {
-		return nil, ErrSessionAlreadyEnded
-	}
-
-	var timing SendTiming
-	result = &SendResult{}
+	var timing types.SendTiming
+	result := &types.SendResult{}
 	start := time.Now()
 	log := si.core.logger
-	svcCtx := &RuleContext{TenantID: si.session.TenantID, UserID: si.session.UserID}
+	svcCtx := &types.RuleContext{TenantID: si.session.TenantID, UserID: si.session.UserID}
 
-	cancel := ensureTimeout(&ctx, defaultCallTimeout)
-	if cancel != nil {
-		defer cancel()
-	}
+	cancel := func() {}
+	if _, ok := ctx.Deadline(); !ok { var nctx context.Context; nctx, cancel = context.WithTimeout(ctx, defaultCallTimeout); ctx = nctx }
+	defer cancel()
 
 	// Stage 1: Pre-rules
-	if err := runStageVoid("pre-rules", func() error {
+	func() {
 		t0 := time.Now()
-		preRules := si.core.rules.MatchPre(svcCtx)
-		timing.RulesPre = time.Since(t0).Milliseconds()
-		_ = preRules
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("pipeline aborted at pre-rules: %w", err)
-	}
+		defer func() { timing.RulesPre = time.Since(t0).Milliseconds(); recover() }()
+		si.core.rules.MatchPre(svcCtx)
+	}()
 
-	msgs := make([]Message, 0, len(history)+1)
+	msgs := make([]types.Message, 0, len(history)+1)
 	msgs = append(msgs, history...)
-	msgs = append(msgs, Message{Role: "user", Content: input, RecordedAt: now()})
+	msgs = append(msgs, types.Message{Role: types.RoleUser, Content: input, RecordedAt: now()})
 
 	totalTokens := estimateMessagesTokenCount(msgs)
-	harnessState := si.core.HarnessState(totalTokens)
+	hs := si.core.HarnessState(totalTokens)
 
-	// Stage 2: Intent Classification
-	var intent *IntentClassification
-	if err := runStageVoid("intent-classifier", func() error {
+	// Stage 2: Classifier
+	var intent *types.IntentClassification
+	func() {
 		t0 := time.Now()
-		intent, err = si.core.intentClassifier.Classify(ctx, msgs, harnessState)
-		timing.Classifier = time.Since(t0).Milliseconds()
-		return err
-	}); err != nil {
-		log.Error("intent classification failed", "error", err)
-		return nil, fmt.Errorf("intent classification: %w", err)
-	}
-	log.Debug("intent", "type", intent.Type, "confidence", intent.Confidence)
+		defer func() { timing.Classifier = time.Since(t0).Milliseconds(); recover() }()
+		var e error; intent, e = si.core.intentClassifier.Classify(ctx, msgs, hs); _ = e
+	}()
+	log.Debug("intent", "type", intent.Type)
 
 	// Stage 3: Tool Selection
-	var matchedTools []ToolSpec
-	if err := runStageVoid("tool-select", func() error {
+	var matchedTools []types.ToolSpec
+	func() {
 		t0 := time.Now()
-		tools, listErr := si.core.registry.List(ctx, si.session.TenantID)
-		if listErr != nil {
-			return listErr
+		defer func() { timing.ToolSelect = time.Since(t0).Milliseconds(); recover() }()
+		if tools, e := si.core.gtregistry.List(ctx, si.session.TenantID); e == nil {
+			matchedTools, _ = si.core.toolSelector.Select(ctx, intent, tools)
 		}
-		var selectErr error
-		matchedTools, selectErr = si.core.toolSelector.Select(ctx, intent, tools)
-		timing.ToolSelect = time.Since(t0).Milliseconds()
-		return selectErr
-	}); err != nil {
-		log.Warn("tool selection failed, continuing", "error", err)
-	}
+	}()
 
 	// Stage 4: Memory Recall
-	if err := runStageVoid("memory-recall", func() error {
+	func() {
 		t0 := time.Now()
-		recall, recallErr := si.core.memoryRecall.Recall(ctx, intent, si.session.TenantID, si.session.UserID)
-		timing.Recall = time.Since(t0).Milliseconds()
-		if recallErr != nil {
-			log.Warn("memory recall failed, continuing", "error", recallErr)
+		defer func() { timing.Recall = time.Since(t0).Milliseconds(); recover() }()
+		if r, e := si.core.memoryRecall.Recall(ctx, intent, si.session.TenantID, si.session.UserID); e == nil {
+			result.Recall = r
 		}
-		result.Recall = recall
-		return nil
-	}); err != nil {
-		log.Warn("memory recall panicked, continuing without recall", "error", err)
-	}
+	}()
 
-	// Stage 5: Density Estimation
-	var density *DensitySignals
-	if err := runStageVoid("density", func() error {
+	// Stage 5: Density
+	var density *types.DensitySignals
+	func() {
 		t0 := time.Now()
-		var densityErr error
-		density, densityErr = si.core.densityEstimator.Estimate(ctx, msgs, harnessState)
-		timing.Density = time.Since(t0).Milliseconds()
-		return densityErr
-	}); err != nil {
-		return nil, fmt.Errorf("density estimation: %w", err)
-	}
+		defer func() { timing.Density = time.Since(t0).Milliseconds(); recover() }()
+		density, _ = si.core.densityEstimator.Estimate(ctx, msgs, hs)
+	}()
 
-	// Stage 6: Offload Decision
-	var decision *OffloadDecision
-	if err := runStageVoid("offload", func() error {
+	// Stage 6: Offload
+	var decision *types.OffloadDecision
+	func() {
 		t0 := time.Now()
-		var offloadErr error
-		decision, offloadErr = si.core.offloadDecider.Decide(ctx, density, harnessState)
-		timing.Offload = time.Since(t0).Milliseconds()
-		return offloadErr
-	}); err != nil {
-		return nil, fmt.Errorf("offload decision: %w", err)
-	}
+		defer func() { timing.Offload = time.Since(t0).Milliseconds(); recover() }()
+		decision, _ = si.core.offloadDecider.Decide(ctx, density, hs)
+	}()
 	result.Offload = decision
 
 	// Stage 7: Compression
 	if decision != nil && decision.ShouldOffload {
-		if err := runStageVoid("compression", func() error {
+		func() {
 			t0 := time.Now()
-			compDecision := si.core.compressor.ShouldCompress(ctx, harnessState)
-			compResult, compErr := si.core.compressor.Compress(ctx, msgs, compDecision)
-			timing.Compression = time.Since(t0).Milliseconds()
-			if compErr != nil {
-				log.Warn("compression failed, continuing without", "error", compErr)
-				return nil
+			defer func() { timing.Compression = time.Since(t0).Milliseconds(); recover() }()
+			cd := si.core.compressor.ShouldCompress(ctx, hs)
+			if cr, e := si.core.compressor.Compress(ctx, msgs, cd); e==nil&&cr!=nil {
+				result.Compression = cr; hs.CurrentTokens = cr.NewTokenTotal
+				si.offloadCnt++; si.tokenSaved += cr.TokenSavings
 			}
-			result.Compression = compResult
-			if compResult != nil {
-				harnessState.CurrentTokens = compResult.NewTokenTotal
-				si.offloadCnt++
-				si.tokenSaved += compResult.TokenSavings
-				log.Info("compression applied", "strategy", compResult.Strategy, "savings", compResult.TokenSavings)
-			}
-			return nil
-		}); err != nil {
-			log.Warn("compression panicked, continuing", "error", err)
-		}
+		}()
 	}
 
 	// Stage 8: LLM Call
-	var resp *ChatResponse
-	if err := runStageVoid("llm-call", func() error {
+	var resp *types.ChatResponse
+	func() {
 		t0 := time.Now()
-		llmReq := buildChatRequest(si.session, msgs, result.Recall, matchedTools)
-		var llmErr error
-		resp, llmErr = si.core.llmClient.Chat(ctx, llmReq)
-		timing.LLMCall = time.Since(t0).Milliseconds()
-		return llmErr
-	}); err != nil {
-		log.Error("LLM call failed", "error", err)
-		return nil, fmt.Errorf("LLM call: %w", err)
-	}
+		defer func() { timing.LLMCall = time.Since(t0).Milliseconds(); recover() }()
+		resp, _ = si.core.llmClient.Chat(ctx, buildRequest(si.session, msgs, result.Recall, matchedTools))
+	}()
+	if resp==nil { return nil, fmt.Errorf("llm: no response") }
 
 	// Stage 9: Post-rules
-	if err := runStageVoid("post-rules", func() error {
+	func() {
 		t0 := time.Now()
-		svcCtx.Domain = DomainScoring
-		si.core.rules.MatchPost(svcCtx)
-		timing.RulesPost = time.Since(t0).Milliseconds()
-		return nil
-	}); err != nil {
-		log.Warn("post-rules panicked, continuing", "error", err)
-	}
+		defer func() { timing.RulesPost = time.Since(t0).Milliseconds(); recover() }()
+		svcCtx.Domain = types.DomainScoring; si.core.rules.MatchPost(svcCtx)
+	}()
 
 	result.Response = resp
-	result.Stats = SessionStats{
-		TotalMessages: len(msgs),
-		TotalTokens:   totalTokens,
-		OffloadEvents: si.offloadCnt,
-		TokenSaved:    si.tokenSaved,
-		AvgLatencyMs:  float64(timing.LLMCall),
-	}
+	result.Stats = types.SessionStats{TotalMessages: len(msgs), TotalTokens: totalTokens, OffloadEvents: si.offloadCnt, TokenSaved: si.tokenSaved}
 	result.Timing = timing
 
 	if si.core.l0Store != nil {
-		recs := []L0Record{
+		recs := []types.L0Record{
 			{ID: newID(), SessionKey: si.session.ID, Role: "user", Content: input, RecordedAt: now()},
 			{ID: newID(), SessionKey: si.session.ID, Role: "assistant", Content: resp.Content, RecordedAt: now()},
 		}
-		if saveErr := si.core.l0Store.Save(ctx, recs); saveErr != nil {
-			log.Warn("failed to save L0 records", "error", saveErr)
+		if se := si.core.l0Store.Save(ctx, recs); se != nil {
+			log.Warn("L0 save failed", "error", se)
 		} else if si.core.memStore != nil {
-			pipe := NewMemoryPipeline(si.core.memStore, log)
-			if extractErr := pipe.ExtractL1(ctx, recs); extractErr != nil {
-				log.Warn("L1 extraction failed", "error", extractErr)
-			}
+			memory.NewPipeline(si.core.memStore, log).ExtractL1(ctx, recs)
 		}
 	}
 
-	si.msgs = appendMessage(si.msgs, Message{Role: "assistant", Content: resp.Content}, maxSessionMessages)
-	si.core.metrics.RecordLatency("send_total", float64(time.Since(start).Milliseconds()))
-	si.core.metrics.RecordTokenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	si.msgs = appendMessage(si.msgs, types.Message{Role: types.RoleAssistant, Content: resp.Content}, maxSessionMessages)
+	si.core.metrics.RecordLatency("send", float64(time.Since(start).Milliseconds()))
+	if resp.Usage.TotalTokens > 0 { si.core.metrics.RecordTokenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens) }
 	return result, nil
 }
 
 func (si *sessionInternal) Close() {
-	if si == nil {
-		return
-	}
-	si.mu.Lock()
-	defer si.mu.Unlock()
-	if si.session.Status == SessionEnded {
-		return
-	}
-	si.session.Status = SessionEnded
-	si.core.removeSession(si.session.ID)
+	if si==nil { return }
+	si.mu.Lock(); defer si.mu.Unlock()
+	if si.session.Status==types.SessionEnded { return }
+	si.session.Status = types.SessionEnded; si.core.removeSession(si.session.ID)
 }
 
-func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult, tools []ToolSpec) *ChatRequest {
-	chatMsgs := make([]ChatMessage, 0, len(msgs)+4)
+func buildRequest(sess *types.Session, msgs []types.Message, recall *types.RecallResult, tools []types.ToolSpec) *types.ChatRequest {
+	cm := make([]types.ChatMessage, 0, len(msgs)+4)
 	if recall != nil {
-		if recall.PrependContext != "" {
-			chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: recall.PrependContext})
-		}
-		if recall.AppendSystemContext != "" {
-			chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: recall.AppendSystemContext})
-		}
+		if recall.PrependContext != "" { cm = append(cm, types.ChatMessage{Role:"system", Content: recall.PrependContext}) }
+		if recall.AppendSystemContext != "" { cm = append(cm, types.ChatMessage{Role:"system", Content: recall.AppendSystemContext}) }
 	}
 	if len(tools) > 0 {
-		var sb strings.Builder
-		sb.WriteString("Available tools::\n")
-		for _, t := range tools {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
-		}
-		chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: sb.String()})
+		var sb strings.Builder; sb.WriteString("Available tools:\n")
+		for _, t := range tools { sb.WriteString("- "); sb.WriteString(t.Name); sb.WriteString(": "); sb.WriteString(t.Description); sb.WriteString("\n") }
+		cm = append(cm, types.ChatMessage{Role:"system", Content: sb.String()})
 	}
-	for i := range msgs {
-		chatMsgs = append(chatMsgs, ChatMessage{Role: msgs[i].Role, Content: msgs[i].Content})
-	}
-	req := &ChatRequest{Messages: chatMsgs}
-	if sess.Model != "" {
-		req.Model = sess.Model
-	}
+	for i := range msgs { cm = append(cm, types.ChatMessage{Role: msgs[i].Role, Content: msgs[i].Content}) }
+	req := &types.ChatRequest{Messages: cm}
+	if sess.Model != "" { req.Model = sess.Model }
 	return req
 }
 
-func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) {
-	if _, ok := (*ctx).Deadline(); !ok {
-		newCtx, c := context.WithTimeout(*ctx, timeout)
-		*ctx = newCtx
-		return c
-	}
-	return nil
-}
-
-func appendMessage(msgs []Message, msg Message, max int) []Message {
-	if max <= 0 {
-		return append(msgs, msg)
-	}
-	if len(msgs) < max {
-		return append(msgs, msg)
-	}
-	n := copy(msgs, msgs[1:])
-	msgs = msgs[:n]
-	return append(msgs, msg)
+func appendMessage(msgs []types.Message, msg types.Message, max int) []types.Message {
+	if max<=0||len(msgs)<max { return append(msgs, msg) }
+	n := copy(msgs, msgs[1:]); msgs = msgs[:n]; return append(msgs, msg)
 }
