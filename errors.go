@@ -3,18 +3,25 @@ package agentcore
 import "errors"
 
 var (
-	ErrSessionNotFound      = errors.New("session not found")
-	ErrSessionAlreadyEnded  = errors.New("session already ended")
-	ErrProviderNotFound     = errors.New("LLM provider not found")
-	ErrNoAvailableProviders = errors.New("no available LLM providers")
-	ErrToolNotFound         = errors.New("tool not found")
-	ErrToolDisabled         = errors.New("tool is disabled")
-	ErrToolExecution        = errors.New("tool execution failed")
-	ErrNoMessages           = errors.New("no messages to process")
-	ErrCompressionFailed    = errors.New("compression failed")
-	ErrInvalidConfig        = errors.New("invalid configuration")
+	// Config validation
+	ErrInvalidConfig = errors.New("invalid configuration")
 
-	// Graceful shutdown
-	ErrAgentClosed         = errors.New("agent core is closed")
-	ErrStagePanic          = errors.New("pipeline stage panicked")
+	// Resource not found
+	ErrSessionNotFound    = errors.New("session not found")
+	ErrProviderNotFound   = errors.New("LLM provider not found")
+	ErrToolNotFound       = errors.New("tool not found")
+
+	// State errors
+	ErrSessionAlreadyEnded  = errors.New("session already ended")
+	ErrToolDisabled         = errors.New("tool is disabled")
+	ErrAgentClosed          = errors.New("agent core is closed")
+
+	// Execution errors
+	ErrToolExecution     = errors.New("tool execution failed")
+	ErrCompressionFailed = errors.New("compression failed")
+	ErrNoMessages        = errors.New("no messages to process")
+
+	// Pipeline
+	ErrStagePanic        = errors.New("pipeline stage panicked")
+	ErrNoAvailableProviders = errors.New("no available LLM providers")
 )

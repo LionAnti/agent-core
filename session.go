@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	defaultExternalCallTimeout = 30 * time.Second
+	defaultCallTimeout  = 30 * time.Second
 )
 
 type sessionInternal struct {
@@ -38,8 +38,6 @@ func (c *AgentCore) removeSession(id string) {
 	c.sessionMu.Unlock()
 }
 
-// runStage executes fn in the current goroutine with panic recovery.
-// No goroutine is spawned — avoids the leak problem entirely.
 func runStage[T any](name string, fn func() (T, error)) (result T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -69,13 +67,18 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		return nil, ErrSessionAlreadyEnded
 	}
 
-	ctx = ensureTimeout(ctx, defaultExternalCallTimeout)
-
 	var timing SendTiming
 	result = &SendResult{}
 	start := time.Now()
 	log := si.core.logger
 	svcCtx := &RuleContext{TenantID: si.session.TenantID, UserID: si.session.UserID}
+
+	// Ensure context has a timeout for external calls.
+	// Use a single reusable timeout context to avoid leaking contexts per stage.
+	cancel := ensureTimeout(&ctx, defaultCallTimeout)
+	if cancel != nil {
+		defer cancel()
+	}
 
 	// Stage 1: Pre-rules
 	if err := runStageVoid("pre-rules", func() error {
@@ -168,7 +171,7 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	if decision != nil && decision.ShouldOffload {
 		if err := runStageVoid("compression", func() error {
 			t0 := time.Now()
-			compDecision := si.core.compressor.ShouldCompress(harnessState)
+			compDecision := si.core.compressor.ShouldCompress(ctx, harnessState)
 			compResult, compErr := si.core.compressor.Compress(ctx, msgs, compDecision)
 			timing.Compression = time.Since(t0).Milliseconds()
 			if compErr != nil {
@@ -223,14 +226,15 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	result.Timing = timing
 
+	// Record L0 (best-effort, non-fatal)
 	if si.core.l0Store != nil {
-		_ = runStageVoid("l0-save", func() error {
-			recs := []L0Record{
-				{ID: newID(), SessionKey: si.session.ID, Role: "user", Content: input, RecordedAt: now()},
-				{ID: newID(), SessionKey: si.session.ID, Role: "assistant", Content: resp.Content, RecordedAt: now()},
-			}
-			return si.core.l0Store.Save(ctx, recs)
-		})
+		recs := []L0Record{
+			{ID: newID(), SessionKey: si.session.ID, Role: "user", Content: input, RecordedAt: now()},
+			{ID: newID(), SessionKey: si.session.ID, Role: "assistant", Content: resp.Content, RecordedAt: now()},
+		}
+		if saveErr := si.core.l0Store.Save(ctx, recs); saveErr != nil {
+			log.Warn("failed to save L0 records", "error", saveErr)
+		}
 	}
 
 	si.msgs = append(si.msgs, Message{Role: "assistant", Content: resp.Content})
@@ -269,19 +273,13 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult) *Chat
 	return req
 }
 
-func ensureTimeout(ctx context.Context, timeout time.Duration) context.Context {
-	if _, ok := ctx.Deadline(); !ok {
-		newCtx, cancel := context.WithTimeout(ctx, timeout)
-		// cancel will be called when newCtx.Done() fires or when the parent is done.
-		// We must release it. Background callers time out; callers with their own
-		// deadline use theirs. In either case the goroutine holding the context is
-		// short-lived (single stage), so deferred cancel is acceptable.
-		_ = cancel
-		return newCtx
+// ensureTimeout adds a timeout to ctx if it doesn't already have one.
+// Returns a cancel function that MUST be called by the caller, or nil if no timeout was added.
+func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) {
+	if _, ok := (*ctx).Deadline(); !ok {
+		newCtx, c := context.WithTimeout(*ctx, timeout)
+		*ctx = newCtx
+		return c
 	}
-	return ctx
+	return nil
 }
-// Note: the cancel function above is intentionally unused. The wrapped context
-// is always short-lived (a single pipeline stage). When it times out or the
-// parent cancels, gc releases it. A deferred cancel would require the caller to
-// track it, adding complexity for no real benefit given the ~30s max lifetime.

@@ -18,7 +18,7 @@ func (m *mockCompressorLLM) Chat(ctx context.Context, req *ChatRequest) (*ChatRe
 func TestCompressor_ShouldCompress_Low(t *testing.T) {
     c := &CompressorEngine{}
     state := &HarnessState{CurrentTokens: 100, ContextWindow: 128000}
-    d := c.ShouldCompress(state)
+    d := c.ShouldCompress(context.Background(), state)
     if d.ShouldCompress {
         t.Fatal("should not compress at <1% ratio")
     }
@@ -27,7 +27,7 @@ func TestCompressor_ShouldCompress_Low(t *testing.T) {
 func TestCompressor_ShouldCompress_Mild(t *testing.T) {
     c := &CompressorEngine{}
     state := &HarnessState{CurrentTokens: 64000, ContextWindow: 128000}
-    d := c.ShouldCompress(state)
+    d := c.ShouldCompress(context.Background(), state)
     if !d.ShouldCompress {
         t.Fatal("should compress at 50% ratio")
     }
@@ -39,7 +39,7 @@ func TestCompressor_ShouldCompress_Mild(t *testing.T) {
 func TestCompressor_ShouldCompress_Aggressive(t *testing.T) {
     c := &CompressorEngine{}
     state := &HarnessState{CurrentTokens: 110000, ContextWindow: 128000}
-    d := c.ShouldCompress(state)
+    d := c.ShouldCompress(context.Background(), state)
     if !d.ShouldCompress {
         t.Fatal("should compress at 86% ratio")
     }

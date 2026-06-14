@@ -25,7 +25,7 @@ type UtilityTracker interface {
 
 type Compressor interface {
     Compress(ctx context.Context, msgs []Message, decision *CompressionDecision) (*CompressionResult, error)
-    ShouldCompress(state *HarnessState) *CompressionDecision
+    ShouldCompress(ctx context.Context, state *HarnessState) *CompressionDecision
 }
 
 type LLMClient interface {
@@ -39,9 +39,12 @@ type MemoryStore interface {
     UpdateL1Utility(ctx context.Context, id string, score float64) error
     IncrementL1Recall(ctx context.Context, id string) error
     CountActiveL1(ctx context.Context, tenantID, userID string) (int, error)
+    DeleteL1(ctx context.Context, id string) error
+    ArchiveL1(ctx context.Context, id string, archived bool) error
     SaveL2(ctx context.Context, scene *L2Scene) error
     GetL2ByUser(ctx context.Context, tenantID, userID string) ([]*L2Scene, error)
     IncrementL2Heat(ctx context.Context, id string) error
+    DeleteL2(ctx context.Context, id string) error
     SaveL3(ctx context.Context, persona *L3Persona) error
     GetCurrentL3(ctx context.Context, tenantID, userID string) (*L3Persona, error)
     ListL3Versions(ctx context.Context, tenantID, userID string, limit int) ([]*L3Persona, error)

@@ -80,6 +80,9 @@ func New(cfg Config) (*AgentCore, error) {
 	if cfg.AggressiveThreshold <= 0 {
 		cfg.AggressiveThreshold = 0.85
 	}
+	if cfg.MildThreshold >= cfg.AggressiveThreshold {
+		return nil, fmt.Errorf("agentcore: %w: MildThreshold (%0.2f) must be less than AggressiveThreshold (%0.2f)", ErrInvalidConfig, cfg.MildThreshold, cfg.AggressiveThreshold)
+	}
 
 	re := NewRulesEngine()
 	if cfg.RuleStore != nil {
@@ -197,6 +200,21 @@ func (c *AgentCore) Close(ctx context.Context) error {
 }
 
 // ActiveSessionCount returns the number of active sessions.
+// HealthCheck verifies the core is initialized and able to process requests.
+// Returns nil if healthy, or an error describing the problem.
+func (c *AgentCore) HealthCheck(ctx context.Context) error {
+	if c.closed {
+		return ErrAgentClosed
+	}
+	if c.llmClient == nil {
+		return fmt.Errorf("agentcore: %w: LLMClient is nil", ErrInvalidConfig)
+	}
+	if c.provider == nil {
+		return fmt.Errorf("agentcore: %w: ProviderManager is nil", ErrInvalidConfig)
+	}
+	return nil
+}
+
 func (c *AgentCore) ActiveSessionCount() int {
 	c.sessionMu.RLock()
 	defer c.sessionMu.RUnlock()

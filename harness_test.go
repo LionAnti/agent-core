@@ -198,21 +198,30 @@ func TestCopyTool(t *testing.T) {
 
 func TestEnsureTimeout(t *testing.T) {
     ctx := context.Background()
-    wrapped := ensureTimeout(ctx, 10)
-    deadline, ok := wrapped.Deadline()
+    newCtx := ctx
+    cancel := ensureTimeout(&newCtx, 10)
+    if cancel == nil {
+        t.Fatal("expected cancel function")
+    }
+    deadline, ok := newCtx.Deadline()
     if !ok {
         t.Fatal("expected deadline after ensureTimeout")
     }
     if deadline.IsZero() {
         t.Fatal("deadline should not be zero")
     }
+    cancel()
 }
 
 func TestEnsureTimeout_Existing(t *testing.T) {
     ctx, cancel := context.WithTimeout(context.Background(), 5)
     defer cancel()
-    wrapped := ensureTimeout(ctx, 30)
-    deadline, ok := wrapped.Deadline()
+    newCtx := ctx
+    wrappedCancel := ensureTimeout(&newCtx, 30)
+    if wrappedCancel != nil {
+        t.Fatal("expected nil cancel when ctx already has deadline")
+    }
+    deadline, ok := newCtx.Deadline()
     if !ok {
         t.Fatal("expected deadline")
     }

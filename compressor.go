@@ -15,7 +15,7 @@ func NewCompressor(llm LLMClient, logger Logger) *CompressorEngine {
 	return &CompressorEngine{llm: llm, logger: logger}
 }
 
-func (ce *CompressorEngine) ShouldCompress(state *HarnessState) *CompressionDecision {
+func (ce *CompressorEngine) ShouldCompress(ctx context.Context, state *HarnessState) *CompressionDecision {
 	if state == nil {
 		return &CompressionDecision{ShouldCompress: false}
 	}
