@@ -23,8 +23,6 @@ func NewProviderManager(store ProviderStore, logger Logger) *ProviderManager {
 		logger: logger,
 		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
-	// First refresh is best-effort; New() does not block on it for more than timeout.
-	// If it fails, active remains empty and Select() returns ErrNoAvailableProviders.
 	if err := pm.refresh(); err != nil {
 		logger.Warn("initial provider refresh failed, will retry on next Select", "error", err)
 	}
@@ -32,6 +30,12 @@ func NewProviderManager(store ProviderStore, logger Logger) *ProviderManager {
 }
 
 func (pm *ProviderManager) refresh() error {
+	if pm == nil {
+		return fmt.Errorf("provider manager: nil receiver")
+	}
+	if pm.store == nil {
+		return fmt.Errorf("provider manager: %w: store is nil", ErrInvalidConfig)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	providers, err := pm.store.ListProviders(ctx)
@@ -53,12 +57,36 @@ func (pm *ProviderManager) refresh() error {
 	return nil
 }
 
-// RefreshProviders reloads providers from the store. Can be called at runtime.
-func (pm *ProviderManager) RefreshProviders() error {
-	return pm.refresh()
+func (pm *ProviderManager) RefreshProviders(ctx context.Context) error {
+	if pm == nil {
+		return fmt.Errorf("provider manager: nil receiver")
+	}
+	if pm.store == nil {
+		return fmt.Errorf("provider manager: %w: store is nil", ErrInvalidConfig)
+	}
+	providers, err := pm.store.ListProviders(ctx)
+	if err != nil {
+		return fmt.Errorf("list providers: %w", err)
+	}
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.active = make([]*LLMProvider, 0, len(providers))
+	for _, p := range providers {
+		if p.Enabled {
+			cp := *p
+			pm.active = append(pm.active, &cp)
+		}
+	}
+	sort.Slice(pm.active, func(i, j int) bool {
+		return pm.active[i].Priority < pm.active[j].Priority
+	})
+	return nil
 }
 
 func (pm *ProviderManager) Select(ctx context.Context, preferredID string) (*LLMProvider, error) {
+	if pm == nil {
+		return nil, fmt.Errorf("provider manager: %w", ErrNoAvailableProviders)
+	}
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
@@ -70,11 +98,9 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) (*LLM
 			}
 		}
 	}
-
 	if len(pm.active) == 0 {
 		return nil, fmt.Errorf("provider: %w", ErrNoAvailableProviders)
 	}
-
 	totalWeight := 0
 	for _, p := range pm.active {
 		totalWeight += p.Weight
@@ -83,7 +109,6 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) (*LLM
 		cp := *pm.active[0]
 		return &cp, nil
 	}
-
 	roll := pm.rng.Intn(totalWeight)
 	cumulative := 0
 	for _, p := range pm.active {
@@ -98,6 +123,9 @@ func (pm *ProviderManager) Select(ctx context.Context, preferredID string) (*LLM
 }
 
 func (pm *ProviderManager) All() []*LLMProvider {
+	if pm == nil {
+		return nil
+	}
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	result := make([]*LLMProvider, len(pm.active))

@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,11 +23,17 @@ type sessionInternal struct {
 }
 
 func (c *AgentCore) openSession(s *Session) (*sessionInternal, error) {
+	if c == nil {
+		return nil, ErrAgentClosed
+	}
 	si := &sessionInternal{core: c, session: s}
 	c.sessionMu.Lock()
 	if c.closed {
 		c.sessionMu.Unlock()
 		return nil, ErrAgentClosed
+	}
+	if c.sessions == nil {
+		c.sessions = make(map[string]*sessionInternal)
 	}
 	c.sessions[s.ID] = si
 	c.sessionMu.Unlock()
@@ -34,6 +41,7 @@ func (c *AgentCore) openSession(s *Session) (*sessionInternal, error) {
 }
 
 func (c *AgentCore) removeSession(id string) {
+	if c == nil { return }
 	c.sessionMu.Lock()
 	delete(c.sessions, id)
 	c.sessionMu.Unlock()
@@ -55,8 +63,10 @@ func runStageVoid(name string, fn func() error) error {
 	return err
 }
 
-// Send executes the full pipeline and returns the LLM response with timing/stats.
 func (si *sessionInternal) Send(ctx context.Context, input string, history []Message) (result *SendResult, err error) {
+	if si == nil {
+		return nil, ErrSessionNotFound
+	}
 	si.mu.Lock()
 	defer func() {
 		si.mu.Unlock()
@@ -225,7 +235,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 	}
 	result.Timing = timing
 
-	// Record L0 (best-effort)
 	if si.core.l0Store != nil {
 		recs := []L0Record{
 			{ID: newID(), SessionKey: si.session.ID, Role: "user", Content: input, RecordedAt: now()},
@@ -234,7 +243,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		if saveErr := si.core.l0Store.Save(ctx, recs); saveErr != nil {
 			log.Warn("failed to save L0 records", "error", saveErr)
 		} else if si.core.memStore != nil {
-			// Trigger L1 extraction from L0 records
 			pipe := NewMemoryPipeline(si.core.memStore, log)
 			if extractErr := pipe.ExtractL1(ctx, recs); extractErr != nil {
 				log.Warn("L1 extraction failed", "error", extractErr)
@@ -242,7 +250,6 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 		}
 	}
 
-	// Cap message history to prevent unbounded growth
 	si.msgs = appendMessage(si.msgs, Message{Role: "assistant", Content: resp.Content}, maxSessionMessages)
 	si.core.metrics.RecordLatency("send_total", float64(time.Since(start).Milliseconds()))
 	si.core.metrics.RecordTokenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
@@ -250,6 +257,9 @@ func (si *sessionInternal) Send(ctx context.Context, input string, history []Mes
 }
 
 func (si *sessionInternal) Close() {
+	if si == nil {
+		return
+	}
 	si.mu.Lock()
 	defer si.mu.Unlock()
 	if si.session.Status == SessionEnded {
@@ -259,7 +269,6 @@ func (si *sessionInternal) Close() {
 	si.core.removeSession(si.session.ID)
 }
 
-// buildChatRequest constructs the ChatRequest with recall context and tool descriptions.
 func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult, tools []ToolSpec) *ChatRequest {
 	chatMsgs := make([]ChatMessage, 0, len(msgs)+4)
 	if recall != nil {
@@ -270,13 +279,13 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult, tools
 			chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: recall.AppendSystemContext})
 		}
 	}
-	// Add available tool descriptions so the LLM knows what it can call
 	if len(tools) > 0 {
-		var toolDesc string
+		var sb strings.Builder
+		sb.WriteString("Available tools::\n")
 		for _, t := range tools {
-			toolDesc += fmt.Sprintf("- %s: %s\n", t.Name, t.Description)
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
 		}
-		chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: "Available tools:\n" + toolDesc})
+		chatMsgs = append(chatMsgs, ChatMessage{Role: "system", Content: sb.String()})
 	}
 	for i := range msgs {
 		chatMsgs = append(chatMsgs, ChatMessage{Role: msgs[i].Role, Content: msgs[i].Content})
@@ -288,7 +297,6 @@ func buildChatRequest(sess *Session, msgs []Message, recall *RecallResult, tools
 	return req
 }
 
-// ensureTimeout wraps ctx with a timeout if it doesn't have one. Caller must call cancel.
 func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) {
 	if _, ok := (*ctx).Deadline(); !ok {
 		newCtx, c := context.WithTimeout(*ctx, timeout)
@@ -298,7 +306,6 @@ func ensureTimeout(ctx *context.Context, timeout time.Duration) (cancel func()) 
 	return nil
 }
 
-// appendMessage appends a message, keeping at most max messages (oldest dropped).
 func appendMessage(msgs []Message, msg Message, max int) []Message {
 	if max <= 0 {
 		return append(msgs, msg)
@@ -306,7 +313,6 @@ func appendMessage(msgs []Message, msg Message, max int) []Message {
 	if len(msgs) < max {
 		return append(msgs, msg)
 	}
-	// Drop oldest, keep newest (max-1) + new
 	n := copy(msgs, msgs[1:])
 	msgs = msgs[:n]
 	return append(msgs, msg)

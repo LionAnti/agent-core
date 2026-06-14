@@ -14,6 +14,9 @@ func NewDefaultUtilityTracker() *DefaultUtilityTracker {
 }
 
 func (ut *DefaultUtilityTracker) Score(ctx context.Context, recordID string, accessCount int, lastAccessAt int64) (*UtilityScore, error) {
+	if ut == nil {
+		return &UtilityScore{}, nil
+	}
 	n := now()
 	daysSince := 0.0
 	if lastAccessAt > 0 {

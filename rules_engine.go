@@ -21,6 +21,12 @@ func NewRulesEngine() *RulesEngine {
 }
 
 func (e *RulesEngine) AddRule(r *Rule) error {
+	if e == nil {
+		return fmt.Errorf("rules engine: nil receiver")
+	}
+	if r == nil {
+		return fmt.Errorf("rules engine: nil rule")
+	}
 	if r.Pattern != "" {
 		re, err := regexp.Compile(r.Pattern)
 		if err != nil {
@@ -35,8 +41,11 @@ func (e *RulesEngine) AddRule(r *Rule) error {
 }
 
 func (e *RulesEngine) RemoveRule(name string) {
-	filtered := make([]*Rule, 0, 10)
+	if e == nil {
+		return
+	}
 	e.mu.Lock()
+	filtered := make([]*Rule, 0, len(e.rules))
 	for _, r := range e.rules {
 		if r.Name != name {
 			filtered = append(filtered, r)
@@ -47,8 +56,13 @@ func (e *RulesEngine) RemoveRule(name string) {
 }
 
 func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
-	var results []RuleOutput
+	if e == nil {
+		return nil
+	}
 	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	results := make([]RuleOutput, 0, len(e.rules))
 	for _, r := range e.rules {
 		if !r.Enabled {
 			continue
@@ -59,8 +73,6 @@ func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 		if r.Pattern != "" {
 			re := e.cache.get(r.Name)
 			if re == nil {
-				// Compile-builtin rules are guaranteed valid, user rules validated at AddRule time.
-				// This fallback handles the builtin rules which compile at init.
 				re = regexp.MustCompile(r.Pattern)
 				e.cache.set(r.Name, re)
 			}
@@ -80,7 +92,6 @@ func (e *RulesEngine) Match(ctx *RuleContext) []RuleOutput {
 			Tags: r.Tags, Domain: r.Domain, Level: r.Level,
 		})
 	}
-	e.mu.RUnlock()
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score

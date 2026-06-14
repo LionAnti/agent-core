@@ -24,12 +24,17 @@ func NewToolRegistry(store RegistryStore, logger Logger) *ToolRegistry {
 }
 
 func (r *ToolRegistry) Register(ctx context.Context, tool *ToolSpec) error {
+	if r == nil {
+		return fmt.Errorf("tool registry: nil receiver")
+	}
 	key := fmt.Sprintf("tools/%s/%s", tool.TenantID, tool.Name)
 	data, err := json.Marshal(tool)
 	if err != nil {
 		return fmt.Errorf("marshal tool: %w", err)
 	}
-	if r.store == nil { return fmt.Errorf("registry store is nil") }
+	if r.store == nil {
+		return fmt.Errorf("tool registry: %w: store is nil", ErrInvalidConfig)
+	}
 	if err := r.store.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("store tool: %w", err)
 	}
@@ -40,7 +45,13 @@ func (r *ToolRegistry) Register(ctx context.Context, tool *ToolSpec) error {
 }
 
 func (r *ToolRegistry) Unregister(ctx context.Context, tenantID, name string) error {
+	if r == nil {
+		return fmt.Errorf("tool registry: nil receiver")
+	}
 	key := fmt.Sprintf("tools/%s/%s", tenantID, name)
+	if r.store == nil {
+		return fmt.Errorf("tool registry: %w: store is nil", ErrInvalidConfig)
+	}
 	if err := r.store.Delete(ctx, key); err != nil {
 		return fmt.Errorf("delete tool: %w", err)
 	}
@@ -51,12 +62,18 @@ func (r *ToolRegistry) Unregister(ctx context.Context, tenantID, name string) er
 }
 
 func (r *ToolRegistry) Get(ctx context.Context, tenantID, name string) (*ToolSpec, error) {
+	if r == nil {
+		return nil, fmt.Errorf("tool registry: nil receiver")
+	}
 	key := fmt.Sprintf("tools/%s/%s", tenantID, name)
 	r.mu.RLock()
 	cached, ok := r.cache[key]
 	r.mu.RUnlock()
 	if ok {
 		return copyTool(cached), nil
+	}
+	if r.store == nil {
+		return nil, fmt.Errorf("tool registry: %w: store is nil", ErrInvalidConfig)
 	}
 	data, err := r.store.Get(ctx, key)
 	if err != nil {
@@ -66,14 +83,20 @@ func (r *ToolRegistry) Get(ctx context.Context, tenantID, name string) (*ToolSpe
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal tool: %w", err)
 	}
-	copy := copyTool(&tool)
+	toolCopy := copyTool(&tool)
 	r.mu.Lock()
-	r.cache[key] = copy
+	r.cache[key] = toolCopy
 	r.mu.Unlock()
-	return copy, nil
+	return toolCopy, nil
 }
 
 func (r *ToolRegistry) List(ctx context.Context, tenantID string) ([]ToolSpec, error) {
+	if r == nil {
+		return nil, fmt.Errorf("tool registry: nil receiver")
+	}
+	if r.store == nil {
+		return nil, fmt.Errorf("tool registry: %w: store is nil", ErrInvalidConfig)
+	}
 	prefix := fmt.Sprintf("tools/%s/", tenantID)
 	dataList, err := r.store.List(ctx, prefix)
 	if err != nil {
@@ -94,12 +117,15 @@ func (r *ToolRegistry) List(ctx context.Context, tenantID string) ([]ToolSpec, e
 }
 
 func (r *ToolRegistry) Search(ctx context.Context, tenantID, query string) ([]ToolSpec, error) {
+	if r == nil {
+		return nil, nil
+	}
 	tools, err := r.List(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	q := strings.ToLower(query)
-	var results []ToolSpec
+	results := make([]ToolSpec, 0, len(tools))
 	for _, t := range tools {
 		if strings.Contains(strings.ToLower(t.Name), q) ||
 			strings.Contains(strings.ToLower(t.Description), q) {
@@ -139,12 +165,13 @@ func NewRuleToolSelector(engine *RulesEngine) *RuleToolSelector {
 }
 
 func (s *RuleToolSelector) Select(ctx context.Context, intent *IntentClassification, tools []ToolSpec) ([]ToolSpec, error) {
+	if s == nil {
+		return tools, nil
+	}
 	if len(tools) == 0 || intent == nil {
 		return tools, nil
 	}
-	s.engine.Match(&RuleContext{Domain: DomainToolSelection, Input: string(intent.Type)})
-
-	var results []ToolSpec
+	results := make([]ToolSpec, 0, len(tools))
 	for _, t := range tools {
 		if matchesToolIntent(&t, intent) {
 			results = append(results, t)

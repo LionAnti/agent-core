@@ -64,7 +64,6 @@ func New(cfg Config) (*AgentCore, error) {
 	if cfg.MemoryStore == nil {
 		return nil, fmt.Errorf("agentcore: %w: MemoryStore is required", ErrInvalidConfig)
 	}
-
 	if cfg.Logger == nil {
 		cfg.Logger = NoopLogger{}
 	}
@@ -93,6 +92,10 @@ func New(cfg Config) (*AgentCore, error) {
 			cfg.Logger.Warn("failed to load user rules", "error", err)
 		} else {
 			for i := range userRules {
+				if userRules[i] == nil {
+					cfg.Logger.Warn("skipping nil rule from store")
+					continue
+				}
 				if addErr := re.AddRule(userRules[i]); addErr != nil {
 					cfg.Logger.Warn("failed to add rule", "name", userRules[i].Name, "error", addErr)
 				}
@@ -148,9 +151,10 @@ func New(cfg Config) (*AgentCore, error) {
 	}, nil
 }
 
-// NewSession creates and returns a new session.
-// Returns ErrAgentClosed if the core has been shut down.
 func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) (*Session, error) {
+	if c == nil {
+		return nil, ErrAgentClosed
+	}
 	s := &Session{
 		ID:        newID(),
 		TenantID:  tenantID,
@@ -169,20 +173,33 @@ func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) (
 	return s, nil
 }
 
-func (c *AgentCore) Provider() *ProviderManager { return c.provider }
-func (c *AgentCore) Registry() *ToolRegistry     { return c.registry }
-func (c *AgentCore) Rules() *RulesEngine         { return c.rules }
+func (c *AgentCore) Provider() *ProviderManager {
+	if c == nil { return nil }
+	return c.provider
+}
+
+func (c *AgentCore) Registry() *ToolRegistry {
+	if c == nil { return nil }
+	return c.registry
+}
+
+func (c *AgentCore) Rules() *RulesEngine {
+	if c == nil { return nil }
+	return c.rules
+}
 
 func (c *AgentCore) HarnessState(currentTokens int) *HarnessState {
+	if c == nil { return nil }
 	return &HarnessState{
 		CurrentTokens: currentTokens,
 		ContextWindow: c.config.ContextWindow,
 	}
 }
 
-// Close gracefully shuts down the AgentCore, closing all active sessions.
-// After Close returns, NewSession returns ErrAgentClosed.
 func (c *AgentCore) Close(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	c.sessionMu.Lock()
 	c.closed = true
 	sessions := make([]*sessionInternal, 0, len(c.sessions))
@@ -199,13 +216,14 @@ func (c *AgentCore) Close(ctx context.Context) error {
 		}
 		si.Close()
 	}
-	c.logger.Info("agentcore closed", "sessions_closed", len(sessions))
+	if c.logger != nil {
+		c.logger.Info("agentcore closed", "sessions_closed", len(sessions))
+	}
 	return nil
 }
 
-// HealthCheck verifies the core is initialized and able to process requests.
 func (c *AgentCore) HealthCheck(ctx context.Context) error {
-	if c.closed {
+	if c == nil || c.closed {
 		return ErrAgentClosed
 	}
 	if c.llmClient == nil {
@@ -217,8 +235,8 @@ func (c *AgentCore) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// ActiveSessionCount returns the number of active sessions.
 func (c *AgentCore) ActiveSessionCount() int {
+	if c == nil { return 0 }
 	c.sessionMu.RLock()
 	defer c.sessionMu.RUnlock()
 	return len(c.sessions)

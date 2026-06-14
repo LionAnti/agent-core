@@ -72,7 +72,10 @@ func (ce *CompressorEngine) summaryCompress(ctx context.Context, msgs []Message)
 
 	var sb strings.Builder
 	for i := 0; i < compressEnd; i++ {
-		sb.WriteString(fmt.Sprintf("%s: %s\n", msgs[i].Role, msgs[i].Content))
+		sb.WriteString(msgs[i].Role)
+		sb.WriteString(": ")
+		sb.WriteString(msgs[i].Content)
+		sb.WriteString("\n")
 	}
 	text := sb.String()
 	origTokens := estimateTokens(text)
@@ -121,7 +124,10 @@ func (ce *CompressorEngine) mermaidCompress(ctx context.Context, msgs []Message)
 		if len(content) > 500 {
 			content = content[:500] + "..."
 		}
-		sb.WriteString(fmt.Sprintf("%s: %s\n", msgs[i].Role, content))
+		sb.WriteString(msgs[i].Role)
+		sb.WriteString(": ")
+		sb.WriteString(content)
+		sb.WriteString("\n")
 	}
 	text := sb.String()
 	origTokens := estimateTokens(text)

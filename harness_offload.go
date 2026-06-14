@@ -12,6 +12,9 @@ func NewDefaultOffloadDecider(mild, aggressive float64) *DefaultOffloadDecider {
 }
 
 func (od *DefaultOffloadDecider) Decide(ctx context.Context, density *DensitySignals, state *HarnessState) (*OffloadDecision, error) {
+	if od == nil || state == nil {
+		return &OffloadDecision{ShouldOffload: false}, nil
+	}
 	ratio := float64(state.CurrentTokens) / float64(state.ContextWindow)
 	if ratio >= od.aggressiveThreshold {
 		return &OffloadDecision{

@@ -32,12 +32,18 @@ func extractUserID(sessionKey string) string {
 }
 
 func (p *MemoryPipeline) ExtractL1(ctx context.Context, records []L0Record) error {
-	if len(records) < 3 || len(records) == 0 {
+	if p == nil || p.store == nil {
+		return nil
+	}
+	if len(records) < 3 {
 		return nil
 	}
 	var sb strings.Builder
 	for _, r := range records {
-		sb.WriteString(r.Role + ": " + r.Content + "\n")
+		sb.WriteString(r.Role)
+		sb.WriteString(": ")
+		sb.WriteString(r.Content)
+		sb.WriteString("\n")
 	}
 	content := sb.String()
 	if strings.TrimSpace(content) == "" {
@@ -65,6 +71,9 @@ func NewDefaultMemoryRecall(store MemoryStore, vector VectorStore, logger Logger
 }
 
 func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassification, tenantID, userID string) (*RecallResult, error) {
+	if mr == nil {
+		return &RecallResult{}, nil
+	}
 	result := &RecallResult{}
 	if mr.store == nil {
 		return result, nil
@@ -72,7 +81,8 @@ func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassif
 	if intent == nil {
 		return result, nil
 	}
-	if intent.Type == IntentRecall || intent.Strategy != "" {
+	// Only trigger recall search when intent explicitly asks for recall
+	if intent.Type == IntentRecall {
 		memories, err := mr.store.SearchL1(ctx, tenantID, userID, intent.Strategy, 5)
 		if err == nil {
 			result.Memories = memories
@@ -94,9 +104,11 @@ func (mr *DefaultMemoryRecall) Recall(ctx context.Context, intent *IntentClassif
 	}
 	if len(result.Memories) > 0 {
 		var sb strings.Builder
-		sb.WriteString("Relevant past context:\n")
+		sb.WriteString("Relevant past context:" + "\n")
 		for _, m := range result.Memories {
-			sb.WriteString("- " + m.Content + "\n")
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
 		}
 		result.PrependContext = sb.String()
 	}

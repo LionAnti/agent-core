@@ -335,7 +335,7 @@ type SendResult struct {
 
 // Send executes the full pipeline: rules -> classifier -> tools -> recall -> density -> offload -> compress -> LLM.
 func (s *Session) Send(ctx context.Context, input string, history []Message) (*SendResult, error) {
-	if s.internal == nil {
+	if s == nil || s.internal == nil {
 		return nil, ErrSessionNotFound
 	}
 	return s.internal.Send(ctx, input, history)
@@ -343,9 +343,10 @@ func (s *Session) Send(ctx context.Context, input string, history []Message) (*S
 
 // Close marks the session as ended.
 func (s *Session) Close() {
-	if s.internal != nil {
-		s.internal.Close()
+	if s == nil || s.internal == nil {
+		return
 	}
+	s.internal.Close()
 }
 
 type SendTiming struct {
