@@ -1,6 +1,11 @@
 package agentcore
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
 
 type AgentCore struct {
 	config           Config
@@ -21,6 +26,9 @@ type AgentCore struct {
 	l0Store          L0Store
 	logger           Logger
 	metrics          MetricsCollector
+	sessionMu        sync.RWMutex
+	sessions         map[string]*sessionInternal
+	closed           bool
 }
 
 type Config struct {
@@ -45,7 +53,7 @@ type Config struct {
 
 func New(cfg Config) (*AgentCore, error) {
 	if cfg.LLMClient == nil {
-		return nil, ErrInvalidConfig
+		return nil, fmt.Errorf("agentcore: %w: LLMClient is required", ErrInvalidConfig)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = NoopLogger{}
@@ -62,10 +70,18 @@ func New(cfg Config) (*AgentCore, error) {
 	if cfg.AggressiveThreshold <= 0 {
 		cfg.AggressiveThreshold = 0.85
 	}
+	if cfg.ProviderStore == nil {
+		return nil, fmt.Errorf("agentcore: %w: ProviderStore is required", ErrInvalidConfig)
+	}
+	if cfg.RegistryStore == nil {
+		return nil, fmt.Errorf("agentcore: %w: RegistryStore is required", ErrInvalidConfig)
+	}
 
 	re := NewRulesEngine()
 	if cfg.RuleStore != nil {
-		userRules, err := cfg.RuleStore.LoadRules(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		userRules, err := cfg.RuleStore.LoadRules(ctx)
+		cancel()
 		if err != nil {
 			cfg.Logger.Warn("failed to load user rules", "error", err)
 		} else {
@@ -119,9 +135,12 @@ func New(cfg Config) (*AgentCore, error) {
 		l0Store:          cfg.L0Store,
 		logger:           cfg.Logger,
 		metrics:          cfg.MetricsCollector,
+		sessions:         make(map[string]*sessionInternal),
 	}, nil
 }
 
+// NewSession creates and returns a new session.
+// The returned Session embeds Send and Close methods.
 func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) *Session {
 	s := &Session{
 		ID:        newID(),
@@ -133,6 +152,8 @@ func (c *AgentCore) NewSession(tenantID, userID string, opts ...SessionOption) *
 	for _, opt := range opts {
 		opt(s)
 	}
+	si := c.openSession(s)
+	s.internal = si
 	return s
 }
 
@@ -145,4 +166,26 @@ func (c *AgentCore) HarnessState(currentTokens int) *HarnessState {
 		CurrentTokens: currentTokens,
 		ContextWindow: c.config.ContextWindow,
 	}
+}
+
+// Close gracefully shuts down the AgentCore, closing all active sessions.
+func (c *AgentCore) Close(ctx context.Context) error {
+	c.sessionMu.Lock()
+	c.closed = true
+	sessions := make([]*sessionInternal, 0, len(c.sessions))
+	for _, si := range c.sessions {
+		sessions = append(sessions, si)
+	}
+	c.sessionMu.Unlock()
+
+	for _, si := range sessions {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		si.Close()
+	}
+	c.logger.Info("agentcore closed", "sessions_closed", len(sessions))
+	return nil
 }

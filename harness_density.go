@@ -6,34 +6,37 @@ import (
 	"strings"
 )
 
-type DefaultDensityEstimator struct {
-	prevDensity float64
-	alpha       float64
-}
+// DefaultDensityEstimator is a stateless density estimator.
+// All state (prevDensity, alpha) is managed by the caller in HarnessState.
+type DefaultDensityEstimator struct{}
 
 func NewDefaultDensityEstimator() *DefaultDensityEstimator {
-	return &DefaultDensityEstimator{alpha: 0.3}
+	return &DefaultDensityEstimator{}
 }
 
 func (de *DefaultDensityEstimator) Estimate(ctx context.Context, msgs []Message, state *HarnessState) (*DensitySignals, error) {
 	signals := &DensitySignals{}
 	msgCount := len(msgs)
-	if msgCount == 0 {
+	if msgCount == 0 || state == nil {
 		return signals, nil
 	}
 	signals.MessageRate = float64(msgCount)
 	signals.TokenDensity = float64(state.CurrentTokens) / float64(max(state.ContextWindow, 1))
 	signals.TopicShiftScore = de.detectTopicShift(msgs)
 	signals.EntityCount = de.countEntities(msgs)
+
 	combined := signals.TokenDensity*0.4 + signals.TopicShiftScore*0.3 +
 		float64(signals.EntityCount)/100*0.2 + signals.MessageRate/100*0.1
 	signals.OverallDensity = combined
-	if de.prevDensity == 0 {
+
+	// EWA smoothing using HarnessState (per-session), no shared instance state
+	alpha := 0.3
+	if state.SmoothedDensity == 0 {
 		signals.SmoothedDensity = combined
 	} else {
-		signals.SmoothedDensity = de.alpha*combined + (1-de.alpha)*de.prevDensity
+		signals.SmoothedDensity = alpha*combined + (1-alpha)*state.SmoothedDensity
 	}
-	de.prevDensity = signals.SmoothedDensity
+	state.SmoothedDensity = signals.SmoothedDensity
 	return signals, nil
 }
 

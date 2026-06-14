@@ -1,5 +1,7 @@
 package agentcore
 
+import "context"
+
 type Message struct {
     Role       string `json:"role"`
     Content    string `json:"content"`
@@ -305,6 +307,7 @@ type Session struct {
     Status     SessionStatus `json:"status"`
     ProviderID string        `json:"provider_id,omitempty"`
     CreatedAt  int64         `json:"created_at,omitempty"`
+	internal *sessionInternal `json:"-"`
 }
 
 type SessionStats struct {
@@ -324,6 +327,22 @@ type SendResult struct {
     Offload     *OffloadDecision   `json:"offload,omitempty"`
     Compression *CompressionResult `json:"compression,omitempty"`
     Timing      SendTiming         `json:"timing"`
+}
+
+
+// Send executes the full pipeline: rules -> classifier -> tools -> recall -> density -> offload -> compress -> LLM.
+func (s *Session) Send(ctx context.Context, input string, history []Message) (*SendResult, error) {
+	if s.internal == nil {
+		return nil, ErrSessionNotFound
+	}
+	return s.internal.Send(ctx, input, history)
+}
+
+// Close marks the session as ended.
+func (s *Session) Close() {
+	if s.internal != nil {
+		s.internal.Close()
+	}
 }
 
 type SendTiming struct {
